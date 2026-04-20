@@ -1,0 +1,11 @@
+[build]
+  publish = "src"
+  functions = "netlify/functions"
+
+[build.environment]
+  NODE_VERSION = "18"
+
+[dev]
+  publish = "src"
+  port = 8888
+  autoLaunch = false
