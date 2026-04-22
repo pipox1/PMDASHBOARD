@@ -36,8 +36,8 @@ PMDashboard.prototype.loadDashboard = async function(companyId) {
         console.warn('[Dashboard] Error processing project ' + project.id + ':', err.message);
       }
 
-      if (processed % 3 === 0) {
-        await this.sleep(250);
+      if (processed % 2 === 0) {
+        await this.sleep(500);
       }
     }
 
