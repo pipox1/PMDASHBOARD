@@ -7,7 +7,7 @@ function ProcoreAPI() {
   this.refreshToken = null;
   this.proxyUrl = '/.netlify/functions/proxy';
   this.cache = {};
-  this.cacheExpiry = 5 * 60 * 1000; // 5 minutes cache
+  this.cacheExpiry = 5 * 60 * 1000;
 }
 
 ProcoreAPI.prototype.setTokens = function(at, rt) {
@@ -45,17 +45,15 @@ ProcoreAPI.prototype.refreshAccessToken = async function() {
   return data;
 };
 
-// Sleep utility
 ProcoreAPI.prototype.sleep = function(ms) {
   return new Promise(function(r) { setTimeout(r, ms); });
 };
 
-// Main API call with cache, retry, and rate limit handling
 ProcoreAPI.prototype.apiCall = async function(endpoint, companyId, retryCount) {
   if (!this.accessToken) throw new Error('Not authenticated');
   if (!retryCount) retryCount = 0;
 
-  // Check cache first
+  // Check cache
   var cacheKey = endpoint + '|' + (companyId || '');
   var cached = this.cache[cacheKey];
   if (cached && (Date.now() - cached.time) < this.cacheExpiry) {
@@ -74,19 +72,18 @@ ProcoreAPI.prototype.apiCall = async function(endpoint, companyId, retryCount) {
       }
     });
 
-    // Handle rate limit (429)
+    // Rate limit - auto retry with exponential backoff
     if (response.status === 429) {
-      if (retryCount < 3) {
-        var waitTime = Math.pow(2, retryCount + 1) * 2000; // 4s, 8s, 16s
-        console.log('[API] Rate limited. Waiting ' + (waitTime/1000) + 's before retry ' + (retryCount+1) + '...');
+      if (retryCount < 4) {
+        var waitTime = Math.pow(2, retryCount + 1) * 2000;
+        console.log('[API] Rate limited! Waiting ' + (waitTime / 1000) + 's... (retry ' + (retryCount + 1) + '/4)');
         await this.sleep(waitTime);
         return this.apiCall(endpoint, companyId, retryCount + 1);
-      } else {
-        throw new Error('Rate limit exceeded. Please wait a few minutes and try again.');
       }
+      throw new Error('Rate limit exceeded. Please wait a few minutes and click Retry.');
     }
 
-    // Handle auth error
+    // Auth expired
     if (response.status === 401 && retryCount === 0 && this.refreshToken) {
       await this.refreshAccessToken();
       return this.apiCall(endpoint, companyId, 1);
@@ -98,17 +95,13 @@ ProcoreAPI.prototype.apiCall = async function(endpoint, companyId, retryCount) {
     }
 
     var data = await response.json();
-
-    // Store in cache
     this.cache[cacheKey] = { data: data, time: Date.now() };
-
     return data;
 
   } catch (error) {
-    if (error.message.indexOf('429') > -1 && retryCount < 3) {
-      var wait = Math.pow(2, retryCount + 1) * 2000;
-      console.log('[API] Rate limit in catch. Waiting ' + (wait/1000) + 's...');
-      await this.sleep(wait);
+    if (error.message.indexOf('429') > -1 && retryCount < 4) {
+      var w = Math.pow(2, retryCount + 1) * 2000;
+      await this.sleep(w);
       return this.apiCall(endpoint, companyId, retryCount + 1);
     }
     throw error;
@@ -138,23 +131,20 @@ ProcoreAPI.prototype.getUser = function(companyId, userId) {
 };
 
 ProcoreAPI.prototype.getScheduleTasks = async function(companyId, projectId) {
-  // Try new API
   try {
     var r1 = await this.apiCall('/rest/v1.0/projects/' + projectId + '/schedule/tasks?per_page=10000', companyId);
     if (r1 && Array.isArray(r1) && r1.length > 0) return r1;
-  } catch (e) { /* try next */ }
+  } catch (e) {}
 
-  // Try legacy
   try {
     var r2 = await this.apiCall('/rest/v1.0/schedule_tasks?project_id=' + projectId + '&per_page=10000', companyId);
     if (r2 && Array.isArray(r2) && r2.length > 0) return r2;
-  } catch (e2) { /* try next */ }
+  } catch (e2) {}
 
-  // Try v1.1
   try {
     var r3 = await this.apiCall('/rest/v1.1/projects/' + projectId + '/schedule/tasks?per_page=10000', companyId);
     if (r3 && Array.isArray(r3) && r3.length > 0) return r3;
-  } catch (e3) { /* give up */ }
+  } catch (e3) {}
 
   return [];
 };
@@ -164,13 +154,12 @@ ProcoreAPI.prototype.getProxiedImageUrl = function(originalUrl) {
   return '/.netlify/functions/image-proxy?url=' + encodeURIComponent(originalUrl);
 };
 
-// Clear cache (for manual refresh)
 ProcoreAPI.prototype.clearCache = function() {
   this.cache = {};
   console.log('[API] Cache cleared');
 };
 
 procoreAPI = new ProcoreAPI();
-console.log('[API] Module loaded with cache and rate limit handling.');
+console.log('[API] Module loaded with cache + rate limit protection.');
 
 })();
