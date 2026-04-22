@@ -60,91 +60,80 @@ PMDashboard.prototype.processProject = async function(project, companyId) {
     return;
   }
 
-  // DEBUG: Log project info to understand the data structure
-  console.log('[DEBUG] === Project: ' + (detail.name || project.name) + ' ===');
+  console.log('[DEBUG] Project: ' + (detail.name || project.name));
 
-  // Find all keys related to manager/pm/owner
-  var allKeys = Object.keys(detail);
-  var relevantKeys = [];
-  for (var ki = 0; ki < allKeys.length; ki++) {
-    var kl = allKeys[ki].toLowerCase();
-    if (kl.indexOf('manager') > -1 || kl.indexOf('pm') > -1 || kl.indexOf('super') > -1 || kl.indexOf('owner') > -1 || kl.indexOf('assigned') > -1 || kl.indexOf('responsible') > -1) {
-      relevantKeys.push(allKeys[ki]);
-    }
-  }
-  console.log('[DEBUG] Relevant keys found:', relevantKeys.join(', '));
-
-  // Log the values of relevant fields
-  for (var ri = 0; ri < relevantKeys.length; ri++) {
-    var val = detail[relevantKeys[ri]];
-    console.log('[DEBUG]   ' + relevantKeys[ri] + ' =', JSON.stringify(val));
-  }
-
-  // Try multiple ways to find the Project Manager
+  // Try to find PM from multiple sources
   var pm = null;
 
-  // Way 1: project_manager as object with id
+  // Method 1: Standard project_manager field (object with id)
   if (detail.project_manager && detail.project_manager.id) {
     pm = { id: detail.project_manager.id, name: detail.project_manager.name || 'Unknown' };
-    console.log('[DEBUG] Found PM via project_manager object:', pm.name);
-  }
-  // Way 2: project_manager as number (just an ID)
-  else if (detail.project_manager && typeof detail.project_manager === 'number') {
-    pm = { id: detail.project_manager, name: 'PM #' + detail.project_manager };
-    console.log('[DEBUG] Found PM via project_manager number:', pm.id);
-  }
-  // Way 3: project_manager as string
-  else if (detail.project_manager && typeof detail.project_manager === 'string') {
-    console.log('[DEBUG] project_manager is a string:', detail.project_manager);
-  }
-  // Way 4: project_manager_id field
-  else if (detail.project_manager_id) {
-    pm = { id: detail.project_manager_id, name: 'PM #' + detail.project_manager_id };
-    console.log('[DEBUG] Found PM via project_manager_id:', pm.id);
-  }
-  // Way 5: pm_id field
-  else if (detail.pm_id) {
-    pm = { id: detail.pm_id, name: 'PM #' + detail.pm_id };
-    console.log('[DEBUG] Found PM via pm_id:', pm.id);
-  }
-  // Way 6: superintendent
-  else if (detail.superintendent && detail.superintendent.id) {
-    pm = { id: detail.superintendent.id, name: detail.superintendent.name || 'Unknown' };
-    console.log('[DEBUG] Found PM via superintendent:', pm.name);
-  }
-  // Way 7: project_owner
-  else if (detail.project_owner && detail.project_owner.id) {
-    pm = { id: detail.project_owner.id, name: detail.project_owner.name || 'Unknown' };
-    console.log('[DEBUG] Found PM via project_owner:', pm.name);
+    console.log('[DEBUG] PM found via project_manager:', pm.name);
   }
 
-  // If still no PM, log full structure for first project
-  if (!pm) {
-    console.log('[DEBUG] *** NO PM FOUND for: ' + (detail.name || project.name) + ' ***');
-    // Log all non-null fields for debugging
-    if (Object.keys(this.pmData).length === 0) {
-      console.log('[DEBUG] === FULL PROJECT STRUCTURE (first project without PM) ===');
-      console.log('[DEBUG] All keys:', allKeys.join(', '));
-      for (var di = 0; di < allKeys.length; di++) {
-        var dval = detail[allKeys[di]];
-        if (dval !== null && dval !== undefined && dval !== '') {
-          var dstr = JSON.stringify(dval);
-          if (dstr && dstr.length < 300) {
-            console.log('[DEBUG]   ' + allKeys[di] + ' = ' + dstr);
-          } else if (dstr) {
-            console.log('[DEBUG]   ' + allKeys[di] + ' = [' + typeof dval + ' length:' + dstr.length + ']');
-          }
+  // Method 2: project_manager as number
+  if (!pm && detail.project_manager && typeof detail.project_manager === 'number') {
+    pm = { id: detail.project_manager, name: 'PM #' + detail.project_manager };
+    console.log('[DEBUG] PM found via project_manager number:', pm.id);
+  }
+
+  // Method 3: project_manager_id field
+  if (!pm && detail.project_manager_id) {
+    pm = { id: detail.project_manager_id, name: 'PM #' + detail.project_manager_id };
+    console.log('[DEBUG] PM found via project_manager_id:', pm.id);
+  }
+
+  // Method 4: Custom fields - WHERE YOUR PM DATA IS STORED!
+  // Procore stores the PM in a custom field of type "login_informations"
+  if (!pm && detail.custom_fields) {
+    var cfKeys = Object.keys(detail.custom_fields);
+    for (var ci = 0; ci < cfKeys.length; ci++) {
+      var cf = detail.custom_fields[cfKeys[ci]];
+      // Look for login_informations type fields (user picker fields)
+      if (cf && cf.data_type === 'login_informations' && cf.value && cf.value.length > 0) {
+        var pmData = cf.value[0]; // First person in the list is the PM
+        if (pmData && pmData.id) {
+          pm = { id: pmData.id, name: pmData.label || 'Unknown PM' };
+          console.log('[DEBUG] PM found via custom_field (' + cfKeys[ci] + '):', pm.name);
+          break;
         }
       }
     }
+  }
+
+  // Method 5: superintendent field
+  if (!pm && detail.superintendent && detail.superintendent.id) {
+    pm = { id: detail.superintendent.id, name: detail.superintendent.name || 'Unknown' };
+    console.log('[DEBUG] PM found via superintendent:', pm.name);
+  }
+
+  // Method 6: project_owner field
+  if (!pm && detail.project_owner && detail.project_owner.id) {
+    pm = { id: detail.project_owner.id, name: detail.project_owner.name || 'Unknown' };
+    console.log('[DEBUG] PM found via project_owner:', pm.name);
+  }
+
+  // Method 7: created_by as fallback
+  if (!pm && detail.created_by && detail.created_by.id) {
+    // Only use created_by if it matches known PM names
+    var creatorName = (detail.created_by.name || '').toLowerCase();
+    if (creatorName.indexOf('barajas') > -1 || creatorName.indexOf('mora') > -1 ||
+        creatorName.indexOf('munoz') > -1 || creatorName.indexOf('muñoz') > -1 ||
+        creatorName.indexOf('gallegos') > -1) {
+      pm = { id: detail.created_by.id, name: detail.created_by.name || 'Unknown' };
+      console.log('[DEBUG] PM found via created_by (known PM):', pm.name);
+    }
+  }
+
+  if (!pm) {
+    console.log('[DEBUG] No PM found for: ' + (detail.name || project.name));
     return;
   }
 
-  // We found a PM - proceed
   var pmId = pm.id;
   var pmName = pm.name;
 
-  // Initialize PM data if new
+  // Initialize PM data if this is a new PM
   if (!this.pmData[pmId]) {
     this.pmData[pmId] = {
       id: pmId,
@@ -185,12 +174,22 @@ PMDashboard.prototype.processProject = async function(project, companyId) {
     progressPercent = this.estimateProgress(detail);
   }
 
+  // Get the stage name properly
+  var stageName = 'Not Set';
+  if (detail.project_stage && detail.project_stage.name) {
+    stageName = detail.project_stage.name;
+  } else if (detail.stage) {
+    stageName = detail.stage;
+  } else if (project.stage) {
+    stageName = project.stage;
+  }
+
   // Add project to PM data
   this.pmData[pmId].projects.push({
     id: project.id,
     name: detail.name || project.name || 'Unnamed',
     number: detail.project_number || project.project_number || '',
-    stage: detail.stage || project.stage || 'Not Set',
+    stage: stageName,
     status: this.getStatus(detail),
     startDate: detail.start_date || null,
     completionDate: detail.completion_date || null,
@@ -223,12 +222,12 @@ PMDashboard.prototype.loadPMDetails = async function(companyId, pmId) {
         av = user.profile_image.url;
       }
 
-      // Only use if it's a real photo (not a default/placeholder)
+      // Only use if it is a real photo (not a default placeholder)
       if (av && av.indexOf('default') === -1 && av.indexOf('missing') === -1) {
         this.pmData[pmId].avatar = av;
       }
 
-      // Update name if available
+      // Update name if available from user directory
       if (user.name) {
         this.pmData[pmId].name = this.cleanName(user.name);
         this.pmData[pmId].initials = this.getInitials(user.name);
@@ -338,7 +337,7 @@ PMDashboard.prototype.togglePMCard = function(pmId) {
     icon.classList.add('fa-chevron-up');
     if (card) card.classList.add('pm-card-expanded');
 
-    // Animate progress bars
+    // Animate progress bars when expanding
     var fills = list.querySelectorAll('.progress-fill');
     for (var i = 0; i < fills.length; i++) {
       var w = fills[i].style.width;
@@ -371,12 +370,12 @@ PMDashboard.prototype.renderDashboard = function(container) {
     container.innerHTML = '<div class="empty-state">' +
       '<i class="fas fa-user-slash"></i>' +
       '<h3>No Project Managers Found</h3>' +
-      '<p>No projects with assigned Project Managers were found. Open browser console (F12) to see debug info about the data structure.</p>' +
+      '<p>No projects with assigned Project Managers were found. Open browser console (F12) for debug info.</p>' +
       '</div>';
     return;
   }
 
-  // Calculate totals
+  // Calculate global totals
   var totalProjects = 0;
   var activeProjects = 0;
   var totalProgress = 0;
@@ -391,10 +390,12 @@ PMDashboard.prototype.renderDashboard = function(container) {
 
   var avgProgress = totalProjects > 0 ? Math.round(totalProgress / totalProjects) : 0;
 
+  // Build HTML
   var h = '';
 
   // ========== SUMMARY CARDS ==========
   h += '<div class="dashboard-summary">';
+
   h += '<div class="summary-card summary-total">';
   h += '<i class="fas fa-project-diagram"></i>';
   h += '<div class="summary-info">';
@@ -422,7 +423,8 @@ PMDashboard.prototype.renderDashboard = function(container) {
   h += '<span class="summary-value">' + avgProgress + '%</span>';
   h += '<span class="summary-label">Avg. Progress</span>';
   h += '</div></div>';
-  h += '</div>';
+
+  h += '</div>'; // end dashboard-summary
 
   // ========== PM CARDS ==========
   h += '<div class="pm-cards-container">';
@@ -435,7 +437,7 @@ PMDashboard.prototype.renderDashboard = function(container) {
   for (var p = 0; p < pmList.length; p++) {
     var pm = pmList[p];
 
-    // Calculate PM stats
+    // Calculate PM-level stats
     var pmActive = 0;
     var pmProg = 0;
     for (var q = 0; q < pm.projects.length; q++) {
@@ -445,11 +447,13 @@ PMDashboard.prototype.renderDashboard = function(container) {
     var pmAvg = pm.projects.length > 0 ? Math.round(pmProg / pm.projects.length) : 0;
     var pmColor = this.getProgressColor(pmAvg);
 
-    // PM Card start
+    // --- PM Card ---
     h += '<div class="pm-card" id="pm-card-' + pm.id + '">';
 
-    // PM Header (clickable)
+    // PM Header (clickable to expand/collapse)
     h += '<div class="pm-header" onclick="dashboard.togglePMCard(\'' + pm.id + '\')">';
+
+    // Profile section
     h += '<div class="pm-profile">';
 
     // Avatar
@@ -461,9 +465,9 @@ PMDashboard.prototype.renderDashboard = function(container) {
     } else {
       h += '<div class="pm-avatar-initials">' + pm.initials + '</div>';
     }
-    h += '</div>';
+    h += '</div>'; // end avatar-wrapper
 
-    // PM Info
+    // PM Info text
     h += '<div class="pm-info">';
     h += '<h3 class="pm-name">' + pm.name + '</h3>';
     if (pm.email) {
@@ -474,9 +478,10 @@ PMDashboard.prototype.renderDashboard = function(container) {
     h += '<span class="pm-stat-badge active"><i class="fas fa-bolt"></i> ' + pmActive + ' active</span>';
     h += '</div>';
     h += '</div>'; // end pm-info
+
     h += '</div>'; // end pm-profile
 
-    // Circular Progress + Toggle
+    // Circular progress + toggle icon
     h += '<div class="pm-summary-right">';
     h += '<div class="pm-circular-progress">';
     h += '<svg viewBox="0 0 36 36" class="circular-progress">';
@@ -491,16 +496,16 @@ PMDashboard.prototype.renderDashboard = function(container) {
 
     h += '</div>'; // end pm-header
 
-    // ========== PROJECTS LIST (hidden by default) ==========
+    // ========== PROJECTS LIST (collapsed by default) ==========
     h += '<div class="pm-projects-list" id="pm-projects-' + pm.id + '" style="display:none;">';
 
-    // Projects header
+    // Projects list header
     h += '<div class="pm-projects-header">';
     h += '<span><i class="fas fa-list"></i> Assigned Projects</span>';
     h += '<span class="pm-tasks-total"><i class="fas fa-tasks"></i> ' + pm.completedTasks + '/' + pm.totalTasks + ' total tasks</span>';
     h += '</div>';
 
-    // Sort projects: active first, then by progress
+    // Sort projects: active first, then by progress descending
     pm.projects.sort(function(a, b) {
       if (a.status === 'Active' && b.status !== 'Active') return -1;
       if (a.status !== 'Active' && b.status === 'Active') return 1;
@@ -516,7 +521,7 @@ PMDashboard.prototype.renderDashboard = function(container) {
 
       h += '<div class="project-item' + (proj.status === 'Overdue' ? ' project-overdue' : '') + '">';
 
-      // Project header row
+      // Project name and status badge
       h += '<div class="project-header-row">';
       h += '<div class="project-name-group">';
       if (proj.number) {
@@ -529,13 +534,13 @@ PMDashboard.prototype.renderDashboard = function(container) {
       h += '</span>';
       h += '</div>';
 
-      // Project meta (stage + tasks)
+      // Stage and task count
       h += '<div class="project-meta">';
       h += '<span class="project-stage"><i class="fas ' + sIcon + '"></i> ' + proj.stage + '</span>';
       h += '<span class="project-tasks-count"><i class="fas fa-check-circle"></i> ' + proj.completedTasks + '/' + proj.totalTasks + ' tasks</span>';
       h += '</div>';
 
-      // Project dates
+      // Dates
       h += '<div class="project-dates">';
       if (proj.startDate) {
         h += '<span class="date-tag"><i class="fas fa-play"></i> ' + this.formatDate(proj.startDate) + '</span>';
@@ -562,10 +567,10 @@ PMDashboard.prototype.renderDashboard = function(container) {
 
   h += '</div>'; // end pm-cards-container
 
-  // Set HTML
+  // Set HTML content
   container.innerHTML = h;
 
-  // Animate progress bars after render
+  // Animate progress bars after a short delay
   setTimeout(function() {
     var bars = document.querySelectorAll('.progress-fill');
     for (var b = 0; b < bars.length; b++) {
@@ -574,9 +579,8 @@ PMDashboard.prototype.renderDashboard = function(container) {
   }, 100);
 };
 
-// Create global instance
+// Create the global dashboard instance
 dashboard = new PMDashboard();
-
-console.log('[Dashboard] Module loaded. dashboard instance created.');
+console.log('[Dashboard] Module loaded successfully.');
 
 })();
