@@ -204,7 +204,9 @@
     showLogin();
   });
 
-  btnRefresh.addEventListener('click', async function() {
+    btnRefresh.addEventListener('click', async function() {
+    // Clear cache so fresh data is loaded
+    if (procoreAPI && procoreAPI.clearCache) procoreAPI.clearCache();
     var id = companySelect.value;
     if (id) await loadDashboardData(id);
     else await loadCompanies();
