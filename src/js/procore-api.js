@@ -31,20 +31,15 @@ ProcoreAPI.prototype.clearTokens = function() {
 
 ProcoreAPI.prototype.refreshAccessToken = async function() {
   if (!this.refreshToken) throw new Error('No refresh token');
-  try {
-    var response = await fetch('/.netlify/functions/token-refresh', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: this.refreshToken })
-    });
-    if (!response.ok) throw new Error('Refresh failed');
-    var data = await response.json();
-    this.setTokens(data.access_token, data.refresh_token || this.refreshToken);
-    return data;
-  } catch (e) {
-    this.clearTokens();
-    throw e;
-  }
+  var response = await fetch('/.netlify/functions/token-refresh', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_token: this.refreshToken })
+  });
+  if (!response.ok) throw new Error('Token refresh failed');
+  var data = await response.json();
+  this.setTokens(data.access_token, data.refresh_token || this.refreshToken);
+  return data;
 };
 
 ProcoreAPI.prototype.apiCall = async function(endpoint, companyId, retried) {
@@ -53,31 +48,25 @@ ProcoreAPI.prototype.apiCall = async function(endpoint, companyId, retried) {
   var params = new URLSearchParams({ endpoint: endpoint });
   if (companyId) params.append('company_id', companyId);
 
-  try {
-    var response = await fetch(this.proxyUrl + '?' + params.toString(), {
-      method: 'GET',
-      headers: {
-        'Authorization': 'Bearer ' + this.accessToken,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    if (response.status === 401 && !retried && this.refreshToken) {
-      console.log('[API] Token expired, refreshing...');
-      await this.refreshAccessToken();
-      return this.apiCall(endpoint, companyId, true);
+  var response = await fetch(this.proxyUrl + '?' + params.toString(), {
+    method: 'GET',
+    headers: {
+      'Authorization': 'Bearer ' + this.accessToken,
+      'Content-Type': 'application/json'
     }
+  });
 
-    if (!response.ok) {
-      var errText = await response.text();
-      throw new Error('API Error ' + response.status + ': ' + errText.substring(0, 200));
-    }
-
-    return response.json();
-  } catch (e) {
-    if (e.message.indexOf('401') > -1 && !retried) this.clearTokens();
-    throw e;
+  if (response.status === 401 && !retried && this.refreshToken) {
+    await this.refreshAccessToken();
+    return this.apiCall(endpoint, companyId, true);
   }
+
+  if (!response.ok) {
+    var errorBody = await response.text();
+    throw new Error('API Error ' + response.status + ': ' + errorBody.substring(0, 200));
+  }
+
+  return response.json();
 };
 
 ProcoreAPI.prototype.getCompanies = function() {
@@ -90,38 +79,9 @@ ProcoreAPI.prototype.getProjects = function(companyId) {
   return this.apiCall('/rest/v1.0/projects?company_id=' + companyId + '&per_page=300', companyId);
 };
 
-// KEY FIX: Get project detail with custom_fields to find PM
 ProcoreAPI.prototype.getProjectDetail = function(companyId, projectId) {
   console.log('[API] Getting project detail ' + projectId + '...');
-  return this.apiCall(
-    '/rest/v1.0/projects/' + projectId + '?company_id=' + companyId,
-    companyId
-  );
-};
-
-// NEW: Get project users/roles to find who is the PM
-ProcoreAPI.prototype.getProjectRoles = function(companyId, projectId) {
-  console.log('[API] Getting project roles for ' + projectId + '...');
-  return this.apiCall(
-    '/rest/v1.1/projects/' + projectId + '/project_roles?company_id=' + companyId + '&per_page=100',
-    companyId
-  );
-};
-
-// NEW: Alternative - get project assignments 
-ProcoreAPI.prototype.getProjectAssignments = function(companyId, projectId) {
-  return this.apiCall(
-    '/rest/v1.0/projects/' + projectId + '/users?per_page=300',
-    companyId
-  );
-};
-
-// NEW: Get custom fields for a project (PM might be in custom_fields)
-ProcoreAPI.prototype.getProjectCustomFields = function(companyId, projectId) {
-  return this.apiCall(
-    '/rest/v1.0/projects/' + projectId + '/custom_field_values?company_id=' + companyId,
-    companyId
-  );
+  return this.apiCall('/rest/v1.0/projects/' + projectId + '?company_id=' + companyId, companyId);
 };
 
 ProcoreAPI.prototype.getMe = function() {
@@ -133,14 +93,63 @@ ProcoreAPI.prototype.getUser = function(companyId, userId) {
   return this.apiCall('/rest/v1.0/companies/' + companyId + '/users/' + userId, companyId);
 };
 
-ProcoreAPI.prototype.getScheduleTasks = function(companyId, projectId) {
+// Try multiple schedule endpoints
+ProcoreAPI.prototype.getScheduleTasks = async function(companyId, projectId) {
   console.log('[API] Getting schedule tasks for ' + projectId + '...');
-  return this.apiCall(
-    '/rest/v1.0/projects/' + projectId + '/schedule/tasks?per_page=10000',
-    companyId
-  );
+  
+  // Try new Schedule API first
+  try {
+    var result = await this.apiCall(
+      '/rest/v1.0/projects/' + projectId + '/schedule/tasks?per_page=10000',
+      companyId
+    );
+    if (result && Array.isArray(result) && result.length > 0) {
+      console.log('[API] Schedule tasks found (new API): ' + result.length);
+      return result;
+    }
+  } catch (e) {
+    console.log('[API] New schedule API failed, trying legacy...');
+  }
+
+  // Try Legacy Schedule API
+  try {
+    var result2 = await this.apiCall(
+      '/rest/v1.0/schedule_tasks?project_id=' + projectId + '&per_page=10000',
+      companyId
+    );
+    if (result2 && Array.isArray(result2) && result2.length > 0) {
+      console.log('[API] Schedule tasks found (legacy): ' + result2.length);
+      return result2;
+    }
+  } catch (e2) {
+    console.log('[API] Legacy schedule API also failed');
+  }
+
+  // Try v1.1 API
+  try {
+    var result3 = await this.apiCall(
+      '/rest/v1.1/projects/' + projectId + '/schedule/tasks?per_page=10000',
+      companyId
+    );
+    if (result3 && Array.isArray(result3) && result3.length > 0) {
+      console.log('[API] Schedule tasks found (v1.1): ' + result3.length);
+      return result3;
+    }
+  } catch (e3) {
+    console.log('[API] v1.1 schedule API also failed');
+  }
+
+  // Return empty array if all fail
+  return [];
+};
+
+// Proxy image URL to avoid CORS issues
+ProcoreAPI.prototype.getProxiedImageUrl = function(originalUrl) {
+  if (!originalUrl) return null;
+  return '/.netlify/functions/image-proxy?url=' + encodeURIComponent(originalUrl);
 };
 
 procoreAPI = new ProcoreAPI();
+console.log('[API] Module loaded.');
 
 })();
