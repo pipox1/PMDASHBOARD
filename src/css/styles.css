@@ -1015,3 +1015,15 @@ button:focus-visible {
     border: 1px solid #ddd;
   }
 }
+
+/* PDF Export Button */
+#btn-export-pdf {
+  background: rgba(244, 126, 37, 0.15);
+  color: var(--procore-orange);
+  border-color: rgba(244, 126, 37, 0.3);
+}
+
+#btn-export-pdf:hover {
+  background: var(--procore-orange);
+  color: white;
+}
