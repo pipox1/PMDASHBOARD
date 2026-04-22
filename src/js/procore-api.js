@@ -6,13 +6,15 @@ function ProcoreAPI() {
   this.accessToken = null;
   this.refreshToken = null;
   this.proxyUrl = '/.netlify/functions/proxy';
+  this.cache = {};
+  this.cacheExpiry = 5 * 60 * 1000; // 5 minutes cache
 }
 
-ProcoreAPI.prototype.setTokens = function(accessToken, refreshToken) {
-  this.accessToken = accessToken;
-  this.refreshToken = refreshToken;
-  localStorage.setItem('pm_access_token', accessToken);
-  if (refreshToken) localStorage.setItem('pm_refresh_token', refreshToken);
+ProcoreAPI.prototype.setTokens = function(at, rt) {
+  this.accessToken = at;
+  this.refreshToken = rt;
+  localStorage.setItem('pm_access_token', at);
+  if (rt) localStorage.setItem('pm_refresh_token', rt);
 };
 
 ProcoreAPI.prototype.loadTokens = function() {
@@ -24,6 +26,7 @@ ProcoreAPI.prototype.loadTokens = function() {
 ProcoreAPI.prototype.clearTokens = function() {
   this.accessToken = null;
   this.refreshToken = null;
+  this.cache = {};
   localStorage.removeItem('pm_access_token');
   localStorage.removeItem('pm_refresh_token');
   localStorage.removeItem('pm_company_id');
@@ -42,31 +45,74 @@ ProcoreAPI.prototype.refreshAccessToken = async function() {
   return data;
 };
 
-ProcoreAPI.prototype.apiCall = async function(endpoint, companyId, retried) {
+// Sleep utility
+ProcoreAPI.prototype.sleep = function(ms) {
+  return new Promise(function(r) { setTimeout(r, ms); });
+};
+
+// Main API call with cache, retry, and rate limit handling
+ProcoreAPI.prototype.apiCall = async function(endpoint, companyId, retryCount) {
   if (!this.accessToken) throw new Error('Not authenticated');
+  if (!retryCount) retryCount = 0;
+
+  // Check cache first
+  var cacheKey = endpoint + '|' + (companyId || '');
+  var cached = this.cache[cacheKey];
+  if (cached && (Date.now() - cached.time) < this.cacheExpiry) {
+    return cached.data;
+  }
 
   var params = new URLSearchParams({ endpoint: endpoint });
   if (companyId) params.append('company_id', companyId);
 
-  var response = await fetch(this.proxyUrl + '?' + params.toString(), {
-    method: 'GET',
-    headers: {
-      'Authorization': 'Bearer ' + this.accessToken,
-      'Content-Type': 'application/json'
+  try {
+    var response = await fetch(this.proxyUrl + '?' + params.toString(), {
+      method: 'GET',
+      headers: {
+        'Authorization': 'Bearer ' + this.accessToken,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    // Handle rate limit (429)
+    if (response.status === 429) {
+      if (retryCount < 3) {
+        var waitTime = Math.pow(2, retryCount + 1) * 2000; // 4s, 8s, 16s
+        console.log('[API] Rate limited. Waiting ' + (waitTime/1000) + 's before retry ' + (retryCount+1) + '...');
+        await this.sleep(waitTime);
+        return this.apiCall(endpoint, companyId, retryCount + 1);
+      } else {
+        throw new Error('Rate limit exceeded. Please wait a few minutes and try again.');
+      }
     }
-  });
 
-  if (response.status === 401 && !retried && this.refreshToken) {
-    await this.refreshAccessToken();
-    return this.apiCall(endpoint, companyId, true);
+    // Handle auth error
+    if (response.status === 401 && retryCount === 0 && this.refreshToken) {
+      await this.refreshAccessToken();
+      return this.apiCall(endpoint, companyId, 1);
+    }
+
+    if (!response.ok) {
+      var errorBody = await response.text();
+      throw new Error('API Error ' + response.status + ': ' + errorBody.substring(0, 200));
+    }
+
+    var data = await response.json();
+
+    // Store in cache
+    this.cache[cacheKey] = { data: data, time: Date.now() };
+
+    return data;
+
+  } catch (error) {
+    if (error.message.indexOf('429') > -1 && retryCount < 3) {
+      var wait = Math.pow(2, retryCount + 1) * 2000;
+      console.log('[API] Rate limit in catch. Waiting ' + (wait/1000) + 's...');
+      await this.sleep(wait);
+      return this.apiCall(endpoint, companyId, retryCount + 1);
+    }
+    throw error;
   }
-
-  if (!response.ok) {
-    var errorBody = await response.text();
-    throw new Error('API Error ' + response.status + ': ' + errorBody.substring(0, 200));
-  }
-
-  return response.json();
 };
 
 ProcoreAPI.prototype.getCompanies = function() {
@@ -80,7 +126,6 @@ ProcoreAPI.prototype.getProjects = function(companyId) {
 };
 
 ProcoreAPI.prototype.getProjectDetail = function(companyId, projectId) {
-  console.log('[API] Getting project detail ' + projectId + '...');
   return this.apiCall('/rest/v1.0/projects/' + projectId + '?company_id=' + companyId, companyId);
 };
 
@@ -89,67 +134,43 @@ ProcoreAPI.prototype.getMe = function() {
 };
 
 ProcoreAPI.prototype.getUser = function(companyId, userId) {
-  console.log('[API] Getting user ' + userId + '...');
   return this.apiCall('/rest/v1.0/companies/' + companyId + '/users/' + userId, companyId);
 };
 
-// Try multiple schedule endpoints
 ProcoreAPI.prototype.getScheduleTasks = async function(companyId, projectId) {
-  console.log('[API] Getting schedule tasks for ' + projectId + '...');
-  
-  // Try new Schedule API first
+  // Try new API
   try {
-    var result = await this.apiCall(
-      '/rest/v1.0/projects/' + projectId + '/schedule/tasks?per_page=10000',
-      companyId
-    );
-    if (result && Array.isArray(result) && result.length > 0) {
-      console.log('[API] Schedule tasks found (new API): ' + result.length);
-      return result;
-    }
-  } catch (e) {
-    console.log('[API] New schedule API failed, trying legacy...');
-  }
+    var r1 = await this.apiCall('/rest/v1.0/projects/' + projectId + '/schedule/tasks?per_page=10000', companyId);
+    if (r1 && Array.isArray(r1) && r1.length > 0) return r1;
+  } catch (e) { /* try next */ }
 
-  // Try Legacy Schedule API
+  // Try legacy
   try {
-    var result2 = await this.apiCall(
-      '/rest/v1.0/schedule_tasks?project_id=' + projectId + '&per_page=10000',
-      companyId
-    );
-    if (result2 && Array.isArray(result2) && result2.length > 0) {
-      console.log('[API] Schedule tasks found (legacy): ' + result2.length);
-      return result2;
-    }
-  } catch (e2) {
-    console.log('[API] Legacy schedule API also failed');
-  }
+    var r2 = await this.apiCall('/rest/v1.0/schedule_tasks?project_id=' + projectId + '&per_page=10000', companyId);
+    if (r2 && Array.isArray(r2) && r2.length > 0) return r2;
+  } catch (e2) { /* try next */ }
 
-  // Try v1.1 API
+  // Try v1.1
   try {
-    var result3 = await this.apiCall(
-      '/rest/v1.1/projects/' + projectId + '/schedule/tasks?per_page=10000',
-      companyId
-    );
-    if (result3 && Array.isArray(result3) && result3.length > 0) {
-      console.log('[API] Schedule tasks found (v1.1): ' + result3.length);
-      return result3;
-    }
-  } catch (e3) {
-    console.log('[API] v1.1 schedule API also failed');
-  }
+    var r3 = await this.apiCall('/rest/v1.1/projects/' + projectId + '/schedule/tasks?per_page=10000', companyId);
+    if (r3 && Array.isArray(r3) && r3.length > 0) return r3;
+  } catch (e3) { /* give up */ }
 
-  // Return empty array if all fail
   return [];
 };
 
-// Proxy image URL to avoid CORS issues
 ProcoreAPI.prototype.getProxiedImageUrl = function(originalUrl) {
   if (!originalUrl) return null;
   return '/.netlify/functions/image-proxy?url=' + encodeURIComponent(originalUrl);
 };
 
+// Clear cache (for manual refresh)
+ProcoreAPI.prototype.clearCache = function() {
+  this.cache = {};
+  console.log('[API] Cache cleared');
+};
+
 procoreAPI = new ProcoreAPI();
-console.log('[API] Module loaded.');
+console.log('[API] Module loaded with cache and rate limit handling.');
 
 })();
