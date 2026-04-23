@@ -1027,3 +1027,71 @@ button:focus-visible {
   background: var(--procore-orange);
   color: white;
 }
+
+/* Tooltip for info icon */
+.info-tooltip-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  cursor: help;
+}
+
+.info-icon {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--border);
+  color: var(--text-secondary);
+  border-radius: 50%;
+  font-size: 9px;
+  margin-left: 4px;
+  transition: var(--transition);
+}
+
+.info-icon:hover {
+  background: var(--procore-orange);
+  color: white;
+}
+
+.info-tooltip {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--dark);
+  color: white;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.5;
+  width: 260px;
+  text-align: left;
+  box-shadow: var(--shadow-lg);
+  z-index: 1000;
+  pointer-events: none;
+}
+
+.info-tooltip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: var(--dark);
+}
+
+.info-tooltip-wrapper:hover .info-tooltip {
+  display: block;
+}
+
+/* Status badge for Completed */
+.project-status-completed {
+  background: #E3F2FD !important;
+  color: #2196F3 !important;
+  border-color: #90CAF9 !important;
+}
