@@ -66,7 +66,6 @@ PMDashboard.prototype.processProject = async function(project, companyId) {
     return;
   }
 
-  // Find PM using all possible methods
   var pm = this.findPM(detail, project);
 
   if (!pm) {
@@ -77,7 +76,6 @@ PMDashboard.prototype.processProject = async function(project, companyId) {
   var pmId = pm.id;
   var pmName = pm.name;
 
-  // Initialize PM if new
   if (!this.pmData[pmId]) {
     this.pmData[pmId] = {
       id: pmId,
@@ -90,11 +88,9 @@ PMDashboard.prototype.processProject = async function(project, companyId) {
       completedTasks: 0
     };
 
-    // Load user details for avatar and email
     await this.loadPMDetails(companyId, pmId);
   }
 
-  // Get schedule tasks for progress
   var scheduleResult = await this.getProjectProgress(companyId, project.id, detail);
 
   // Get stage name
@@ -107,13 +103,15 @@ PMDashboard.prototype.processProject = async function(project, companyId) {
     stageName = detail.stage.name;
   }
 
-  // Add project
+  // Determine status based on STAGE, not dates
+  var status = this.getStatus(detail, stageName);
+
   this.pmData[pmId].projects.push({
     id: project.id,
     name: detail.name || project.name || 'Unnamed',
     number: detail.project_number || project.project_number || '',
     stage: stageName,
-    status: this.getStatus(detail),
+    status: status,
     startDate: detail.start_date || null,
     completionDate: detail.completion_date || null,
     totalTasks: scheduleResult.totalTasks,
@@ -127,22 +125,18 @@ PMDashboard.prototype.processProject = async function(project, companyId) {
 };
 
 PMDashboard.prototype.findPM = function(detail, project) {
-  // 1. project_manager as object
   if (detail.project_manager && detail.project_manager.id) {
     return { id: detail.project_manager.id, name: detail.project_manager.name || 'Unknown' };
   }
 
-  // 2. project_manager as number
   if (detail.project_manager && typeof detail.project_manager === 'number') {
     return { id: detail.project_manager, name: 'PM #' + detail.project_manager };
   }
 
-  // 3. project_manager_id
   if (detail.project_manager_id) {
     return { id: detail.project_manager_id, name: 'PM #' + detail.project_manager_id };
   }
 
-  // 4. Custom fields - login_informations type (YOUR PM FIELD)
   if (detail.custom_fields) {
     var cfKeys = Object.keys(detail.custom_fields);
     for (var ci = 0; ci < cfKeys.length; ci++) {
@@ -162,17 +156,14 @@ PMDashboard.prototype.findPM = function(detail, project) {
     }
   }
 
-  // 5. superintendent
   if (detail.superintendent && detail.superintendent.id) {
     return { id: detail.superintendent.id, name: detail.superintendent.name || 'Unknown' };
   }
 
-  // 6. project_owner
   if (detail.project_owner && detail.project_owner.id) {
     return { id: detail.project_owner.id, name: detail.project_owner.name || 'Unknown' };
   }
 
-  // 7. created_by (only known PMs)
   if (detail.created_by && detail.created_by.id && detail.created_by.name) {
     var cn = detail.created_by.name.toLowerCase();
     if (cn.indexOf('barajas') > -1 || cn.indexOf('mora') > -1 ||
@@ -183,6 +174,61 @@ PMDashboard.prototype.findPM = function(detail, project) {
   }
 
   return null;
+};
+
+/**
+ * Determine project status based on STAGE name, NOT dates
+ * - Active = Stage contains "Ejecucion", "Construction", "Course"
+ * - Completed = Stage contains "Terminado", "Garantia", "Warranty", "Post", "Cierre"
+ * - Not Started = Everything else or project not active
+ * NO "Overdue" status - removed per requirement
+ */
+PMDashboard.prototype.getStatus = function(project, stageName) {
+  // If project is not active in Procore
+  if (project.active === false) return 'Inactive';
+
+  var stage = (stageName || '').toLowerCase();
+
+  // Active: project is in execution/construction phase
+  if (stage.indexOf('ejecuc') > -1 ||
+      stage.indexOf('construc') > -1 ||
+      stage.indexOf('course') > -1 ||
+      stage.indexOf('en proceso') > -1 ||
+      stage.indexOf('activo') > -1) {
+    return 'Active';
+  }
+
+  // Completed: project is finished, in warranty, or post-construction
+  if (stage.indexOf('terminad') > -1 ||
+      stage.indexOf('garant') > -1 ||
+      stage.indexOf('warranty') > -1 ||
+      stage.indexOf('post') > -1 ||
+      stage.indexOf('cierre') > -1 ||
+      stage.indexOf('close') > -1 ||
+      stage.indexOf('complet') > -1 ||
+      stage.indexOf('finished') > -1 ||
+      stage.indexOf('cerrado') > -1) {
+    return 'Completed';
+  }
+
+  // Pre-construction / design / bidding phases
+  if (stage.indexOf('pre') > -1 ||
+      stage.indexOf('dise') > -1 ||
+      stage.indexOf('design') > -1 ||
+      stage.indexOf('cotiza') > -1 ||
+      stage.indexOf('bid') > -1 ||
+      stage.indexOf('propu') > -1 ||
+      stage.indexOf('plann') > -1) {
+    return 'Pre-Construction';
+  }
+
+  // Not started
+  var now = new Date();
+  var start = project.start_date ? new Date(project.start_date) : null;
+  if (start && now < start) return 'Not Started';
+
+  // Default: Active (if we can't determine from stage)
+  return 'Active';
 };
 
 PMDashboard.prototype.getProjectProgress = async function(companyId, projectId, detail) {
@@ -206,9 +252,7 @@ PMDashboard.prototype.getProjectProgress = async function(companyId, projectId, 
         workTasks.push(t);
       }
 
-      if (workTasks.length === 0) {
-        workTasks = tasks;
-      }
+      if (workTasks.length === 0) workTasks = tasks;
 
       result.totalTasks = workTasks.length;
 
@@ -232,14 +276,11 @@ PMDashboard.prototype.getProjectProgress = async function(companyId, projectId, 
         ? Math.round((result.completedTasks / result.totalTasks) * 100)
         : 0;
       result.source = 'schedule';
-
-      console.log('[Schedule] Project ' + projectId + ': ' + result.completedTasks + '/' + result.totalTasks + ' = ' + result.progressPercent + '%');
     } else {
       result.progressPercent = this.estimateProgress(detail);
       result.source = 'dates';
     }
   } catch (e) {
-    console.warn('[Dashboard] Schedule error for project ' + projectId + ':', e.message);
     result.progressPercent = this.estimateProgress(detail);
     result.source = 'dates';
   }
@@ -252,12 +293,9 @@ PMDashboard.prototype.loadPMDetails = async function(companyId, pmId) {
     var user = await procoreAPI.getUser(companyId, pmId);
     if (!user) return;
 
-    // Email
     this.pmData[pmId].email = user.email_address || user.email || '';
 
-    // Find avatar URL from all possible fields
     var av = null;
-
     if (user.avatar && typeof user.avatar === 'string' && user.avatar.indexOf('http') === 0) {
       av = user.avatar;
     } else if (user.avatar && typeof user.avatar === 'object') {
@@ -272,32 +310,19 @@ PMDashboard.prototype.loadPMDetails = async function(companyId, pmId) {
     if (!av && user.profile_image && user.profile_image.url) av = user.profile_image.url;
     if (!av && user.profile_photo && user.profile_photo.url) av = user.profile_photo.url;
 
-    // Use proxy to avoid CORS issues with Procore storage
     if (av && typeof av === 'string' && av.indexOf('http') === 0) {
       if (av.indexOf('/default') === -1 && av.indexOf('missing') === -1 && av.indexOf('placeholder') === -1) {
         this.pmData[pmId].avatar = procoreAPI.getProxiedImageUrl(av);
-        console.log('[Avatar] Proxied for ' + this.pmData[pmId].name);
       }
     }
 
-    // Update name
     if (user.name) {
       this.pmData[pmId].name = this.cleanName(user.name);
       this.pmData[pmId].initials = this.getInitials(user.name);
     }
   } catch (e) {
-    console.warn('[Dashboard] Cannot load PM details for ' + pmId + ':', e.message);
+    console.warn('[Dashboard] Cannot load PM details for ' + pmId);
   }
-};
-
-PMDashboard.prototype.getStatus = function(p) {
-  if (p.active === false) return 'Inactive';
-  var now = new Date();
-  var end = p.completion_date ? new Date(p.completion_date) : null;
-  var start = p.start_date ? new Date(p.start_date) : null;
-  if (end && now > end) return 'Overdue';
-  if (start && now < start) return 'Not Started';
-  return 'Active';
 };
 
 PMDashboard.prototype.estimateProgress = function(p) {
@@ -336,7 +361,7 @@ PMDashboard.prototype.getStatusColor = function(s) {
     'Completed': '#2196F3',
     'Not Started': '#9E9E9E',
     'Inactive': '#F44336',
-    'Overdue': '#F44336'
+    'Pre-Construction': '#9C27B0'
   };
   return c[s] || '#6B7280';
 };
@@ -346,9 +371,8 @@ PMDashboard.prototype.getStageIcon = function(stage) {
   if (s.indexOf('ejecuc') > -1 || s.indexOf('construc') > -1 || s.indexOf('course') > -1) return 'fa-hard-hat';
   if (s.indexOf('pre') > -1 || s.indexOf('dise') > -1 || s.indexOf('design') > -1) return 'fa-drafting-compass';
   if (s.indexOf('post') > -1 || s.indexOf('cierre') > -1 || s.indexOf('close') > -1) return 'fa-flag-checkered';
-  if (s.indexOf('warrant') > -1 || s.indexOf('garant') > -1) return 'fa-shield-alt';
+  if (s.indexOf('warrant') > -1 || s.indexOf('garant') > -1 || s.indexOf('terminad') > -1) return 'fa-shield-alt';
   if (s.indexOf('cotiza') > -1 || s.indexOf('bid') > -1) return 'fa-file-invoice-dollar';
-  if (s.indexOf('termin') > -1) return 'fa-check-double';
   return 'fa-folder-open';
 };
 
@@ -360,9 +384,7 @@ PMDashboard.prototype.formatDate = function(d) {
 };
 
 PMDashboard.prototype.sleep = function(ms) {
-  return new Promise(function(resolve) {
-    setTimeout(resolve, ms);
-  });
+  return new Promise(function(resolve) { setTimeout(resolve, ms); });
 };
 
 PMDashboard.prototype.updateLoadingMessage = function(msg) {
@@ -404,24 +426,14 @@ PMDashboard.prototype.togglePMCard = function(pmId) {
 PMDashboard.prototype.renderDashboard = function(container) {
   var pmList = [];
   var keys = Object.keys(this.pmData);
-  for (var k = 0; k < keys.length; k++) {
-    pmList.push(this.pmData[keys[k]]);
-  }
+  for (var k = 0; k < keys.length; k++) pmList.push(this.pmData[keys[k]]);
 
   if (pmList.length === 0) {
-    container.innerHTML = '<div class="empty-state">' +
-      '<i class="fas fa-user-slash"></i>' +
-      '<h3>No Project Managers Found</h3>' +
-      '<p>No projects with assigned PMs were found. Check console (F12) for debug info.</p>' +
-      '</div>';
+    container.innerHTML = '<div class="empty-state"><i class="fas fa-user-slash"></i><h3>No Project Managers Found</h3><p>No projects with assigned PMs were found.</p></div>';
     return;
   }
 
-  // Calculate totals
-  var totalProjects = 0;
-  var activeProjects = 0;
-  var totalProgress = 0;
-
+  var totalProjects = 0, activeProjects = 0, totalProgress = 0;
   for (var i = 0; i < pmList.length; i++) {
     totalProjects += pmList[i].projects.length;
     for (var j = 0; j < pmList[i].projects.length; j++) {
@@ -429,7 +441,6 @@ PMDashboard.prototype.renderDashboard = function(container) {
       totalProgress += pmList[i].projects[j].progressPercent;
     }
   }
-
   var avgProgress = totalProjects > 0 ? Math.round(totalProgress / totalProjects) : 0;
 
   var h = '';
@@ -437,48 +448,30 @@ PMDashboard.prototype.renderDashboard = function(container) {
   // ========== SUMMARY CARDS ==========
   h += '<div class="dashboard-summary">';
 
-  h += '<div class="summary-card summary-total">';
-  h += '<i class="fas fa-project-diagram"></i>';
-  h += '<div class="summary-info">';
-  h += '<span class="summary-value">' + totalProjects + '</span>';
-  h += '<span class="summary-label">Total Projects</span>';
-  h += '</div></div>';
+  h += '<div class="summary-card summary-total"><i class="fas fa-project-diagram"></i><div class="summary-info"><span class="summary-value">' + totalProjects + '</span><span class="summary-label">Total Projects</span></div></div>';
 
-  h += '<div class="summary-card summary-active">';
-  h += '<i class="fas fa-play-circle"></i>';
-  h += '<div class="summary-info">';
-  h += '<span class="summary-value">' + activeProjects + '</span>';
-  h += '<span class="summary-label">Active</span>';
-  h += '</div></div>';
+  h += '<div class="summary-card summary-active"><i class="fas fa-play-circle"></i><div class="summary-info"><span class="summary-value">' + activeProjects + '</span><span class="summary-label">Active</span></div></div>';
 
-  h += '<div class="summary-card summary-pms">';
-  h += '<i class="fas fa-users"></i>';
-  h += '<div class="summary-info">';
-  h += '<span class="summary-value">' + pmList.length + '</span>';
-  h += '<span class="summary-label">Project Managers</span>';
-  h += '</div></div>';
+  h += '<div class="summary-card summary-pms"><i class="fas fa-users"></i><div class="summary-info"><span class="summary-value">' + pmList.length + '</span><span class="summary-label">Project Managers</span></div></div>';
 
-  h += '<div class="summary-card summary-avg">';
-  h += '<i class="fas fa-chart-line"></i>';
-  h += '<div class="summary-info">';
-  h += '<span class="summary-value">' + avgProgress + '%</span>';
-  h += '<span class="summary-label">Avg. Progress</span>';
-  h += '</div></div>';
+  // AVG Progress with tooltip
+  h += '<div class="summary-card summary-avg"><i class="fas fa-chart-line"></i><div class="summary-info"><span class="summary-value">' + avgProgress + '%</span>';
+  h += '<span class="summary-label">Avg. Progress ';
+  h += '<span class="info-tooltip-wrapper">';
+  h += '<span class="info-icon"><i class="fas fa-question"></i></span>';
+  h += '<span class="info-tooltip">The Average Progress is calculated from the combined progress of all projects across all Project Managers. For projects with schedule data, progress = completed tasks / total tasks. For projects without schedule data, progress is estimated based on start and completion dates relative to today.</span>';
+  h += '</span>';
+  h += '</span></div></div>';
 
   h += '</div>';
 
   // ========== PM CARDS ==========
   h += '<div class="pm-cards-container">';
-
-  pmList.sort(function(a, b) {
-    return a.name.localeCompare(b.name);
-  });
+  pmList.sort(function(a, b) { return a.name.localeCompare(b.name); });
 
   for (var p = 0; p < pmList.length; p++) {
     var pm = pmList[p];
-
-    var pmActive = 0;
-    var pmProg = 0;
+    var pmActive = 0, pmProg = 0;
     for (var q = 0; q < pm.projects.length; q++) {
       if (pm.projects[q].status === 'Active') pmActive++;
       pmProg += pm.projects[q].progressPercent;
@@ -486,70 +479,50 @@ PMDashboard.prototype.renderDashboard = function(container) {
     var pmAvg = pm.projects.length > 0 ? Math.round(pmProg / pm.projects.length) : 0;
     var pmColor = this.getProgressColor(pmAvg);
 
-    // PM Card
     h += '<div class="pm-card" id="pm-card-' + pm.id + '">';
 
     // PM Header
     h += '<div class="pm-header" onclick="dashboard.togglePMCard(\'' + pm.id + '\')">';
-    h += '<div class="pm-profile">';
+    h += '<div class="pm-profile"><div class="pm-avatar-wrapper">';
 
-    // Avatar
-    h += '<div class="pm-avatar-wrapper">';
     if (pm.avatar) {
-      h += '<img src="' + pm.avatar + '" alt="' + pm.name + '" class="pm-avatar" ';
-      h += 'crossorigin="anonymous" referrerpolicy="no-referrer" ';
+      h += '<img src="' + pm.avatar + '" alt="' + pm.name + '" class="pm-avatar" crossorigin="anonymous" referrerpolicy="no-referrer" ';
       h += 'onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\';">';
       h += '<div class="pm-avatar-initials" style="display:none;">' + pm.initials + '</div>';
     } else {
       h += '<div class="pm-avatar-initials">' + pm.initials + '</div>';
     }
-    h += '</div>';
 
-    // PM Info
-    h += '<div class="pm-info">';
+    h += '</div><div class="pm-info">';
     h += '<h3 class="pm-name">' + pm.name + '</h3>';
-    if (pm.email) {
-      h += '<span class="pm-email"><i class="fas fa-envelope"></i> ' + pm.email + '</span>';
-    }
+    if (pm.email) h += '<span class="pm-email"><i class="fas fa-envelope"></i> ' + pm.email + '</span>';
     h += '<div class="pm-stats-inline">';
     h += '<span class="pm-stat-badge"><i class="fas fa-folder-open"></i> ' + pm.projects.length + ' project' + (pm.projects.length !== 1 ? 's' : '') + '</span>';
     h += '<span class="pm-stat-badge active"><i class="fas fa-bolt"></i> ' + pmActive + ' active</span>';
-    h += '</div>';
-    h += '</div>';
-    h += '</div>';
+    h += '</div></div></div>';
 
     // Circular Progress
-    h += '<div class="pm-summary-right">';
-    h += '<div class="pm-circular-progress">';
+    h += '<div class="pm-summary-right"><div class="pm-circular-progress">';
     h += '<svg viewBox="0 0 36 36" class="circular-progress">';
     h += '<path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>';
-    h += '<path class="circle-fill" stroke="' + pmColor + '" stroke-dasharray="' + pmAvg + ', 100" ';
-    h += 'd="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>';
+    h += '<path class="circle-fill" stroke="' + pmColor + '" stroke-dasharray="' + pmAvg + ', 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>';
     h += '<text x="18" y="20.35" class="progress-text">' + pmAvg + '%</text>';
-    h += '</svg>';
-    h += '</div>';
-    h += '<i class="fas fa-chevron-down pm-toggle-icon" id="toggle-icon-' + pm.id + '"></i>';
-    h += '</div>';
+    h += '</svg></div>';
+    h += '<i class="fas fa-chevron-down pm-toggle-icon" id="toggle-icon-' + pm.id + '"></i></div>';
 
     h += '</div>'; // end pm-header
 
-    // ========== PROJECTS LIST ==========
+    // Projects List
     h += '<div class="pm-projects-list" id="pm-projects-' + pm.id + '" style="display:none;">';
+    h += '<div class="pm-projects-header"><span><i class="fas fa-list"></i> Assigned Projects</span>';
+    h += '<span class="pm-tasks-total"><i class="fas fa-tasks"></i> ' + pm.completedTasks + '/' + pm.totalTasks + ' total tasks</span></div>';
 
-    // Header
-    h += '<div class="pm-projects-header">';
-    h += '<span><i class="fas fa-list"></i> Assigned Projects</span>';
-    h += '<span class="pm-tasks-total"><i class="fas fa-tasks"></i> ' + pm.completedTasks + '/' + pm.totalTasks + ' total tasks</span>';
-    h += '</div>';
-
-    // Sort projects
     pm.projects.sort(function(a, b) {
       if (a.status === 'Active' && b.status !== 'Active') return -1;
       if (a.status !== 'Active' && b.status === 'Active') return 1;
       return b.progressPercent - a.progressPercent;
     });
 
-    // Each project
     for (var r = 0; r < pm.projects.length; r++) {
       var proj = pm.projects[r];
       var pColor = this.getProgressColor(proj.progressPercent);
@@ -557,20 +530,13 @@ PMDashboard.prototype.renderDashboard = function(container) {
       var sIcon = this.getStageIcon(proj.stage);
       var sourceLabel = proj.progressSource === 'schedule' ? '' : ' (est.)';
 
-      h += '<div class="project-item' + (proj.status === 'Overdue' ? ' project-overdue' : '') + '">';
+      h += '<div class="project-item">';
 
-      // Name and status
-      h += '<div class="project-header-row">';
-      h += '<div class="project-name-group">';
-      if (proj.number) {
-        h += '<span class="project-number">#' + proj.number + '</span>';
-      }
-      h += '<span class="project-name">' + proj.name + '</span>';
-      h += '</div>';
-      h += '<span class="project-status-badge" style="background:' + sColor + '15;color:' + sColor + ';border:1px solid ' + sColor + '30;">';
-      h += proj.status;
-      h += '</span>';
-      h += '</div>';
+      // Name + Status
+      h += '<div class="project-header-row"><div class="project-name-group">';
+      if (proj.number) h += '<span class="project-number">#' + proj.number + '</span>';
+      h += '<span class="project-name">' + proj.name + '</span></div>';
+      h += '<span class="project-status-badge" style="background:' + sColor + '15;color:' + sColor + ';border:1px solid ' + sColor + '30;">' + proj.status + '</span></div>';
 
       // Meta
       h += '<div class="project-meta">';
@@ -584,43 +550,29 @@ PMDashboard.prototype.renderDashboard = function(container) {
 
       // Dates
       h += '<div class="project-dates">';
-      if (proj.startDate) {
-        h += '<span class="date-tag"><i class="fas fa-play"></i> ' + this.formatDate(proj.startDate) + '</span>';
-      }
-      if (proj.completionDate) {
-        h += '<span class="date-tag"><i class="fas fa-flag-checkered"></i> ' + this.formatDate(proj.completionDate) + '</span>';
-      }
+      if (proj.startDate) h += '<span class="date-tag"><i class="fas fa-play"></i> ' + this.formatDate(proj.startDate) + '</span>';
+      if (proj.completionDate) h += '<span class="date-tag"><i class="fas fa-flag-checkered"></i> ' + this.formatDate(proj.completionDate) + '</span>';
       h += '</div>';
 
-      // Progress bar
-      h += '<div class="project-progress-bar">';
-      h += '<div class="progress-track">';
-      h += '<div class="progress-fill" style="width:' + proj.progressPercent + '%;background:' + pColor + ';"></div>';
-      h += '</div>';
-      h += '<span class="progress-percent" style="color:' + pColor + ';">' + proj.progressPercent + '%' + sourceLabel + '</span>';
-      h += '</div>';
+      // Progress
+      h += '<div class="project-progress-bar"><div class="progress-track"><div class="progress-fill" style="width:' + proj.progressPercent + '%;background:' + pColor + ';"></div></div>';
+      h += '<span class="progress-percent" style="color:' + pColor + ';">' + proj.progressPercent + '%' + sourceLabel + '</span></div>';
 
-      h += '</div>'; // end project-item
+      h += '</div>';
     }
 
-    h += '</div>'; // end pm-projects-list
-    h += '</div>'; // end pm-card
+    h += '</div></div>';
   }
 
-  h += '</div>'; // end pm-cards-container
-
+  h += '</div>';
   container.innerHTML = h;
 
-  // Animate progress bars
   setTimeout(function() {
     var bars = document.querySelectorAll('.progress-fill');
-    for (var b = 0; b < bars.length; b++) {
-      bars[b].style.transition = 'width 1s ease';
-    }
+    for (var b = 0; b < bars.length; b++) bars[b].style.transition = 'width 1s ease';
   }, 100);
 };
 
-// Create global instance
 dashboard = new PMDashboard();
 console.log('[Dashboard] Module loaded.');
 
