@@ -3,6 +3,7 @@ var dashboard = null;
 (function() {
 
 var _modalPendingData = {};
+var _containerListenerAttached = false;
 
 function PMDashboard() {
   this.companyId = null;
@@ -250,6 +251,20 @@ PMDashboard.prototype.loadDashboard = async function(companyId) {
 PMDashboard.prototype.processProject = async function(project, companyId) {
   var detail;
   try { detail = await procoreAPI.getProjectDetail(companyId, project.id); } catch (e) { return; }
+
+  // FILTER: Skip Bidding and Pre-Construction projects
+  var stageName = 'Not Set';
+  if (detail.project_stage && detail.project_stage.name) stageName = detail.project_stage.name;
+  else if (detail.stage && typeof detail.stage === 'string') stageName = detail.stage;
+
+  var stageLower = stageName.toLowerCase();
+  if (stageLower.indexOf('bid') > -1 || stageLower.indexOf('cotiza') > -1 ||
+      stageLower.indexOf('pre') > -1 || stageLower.indexOf('dise') > -1 ||
+      stageLower.indexOf('plann') > -1) {
+    console.log('[Dashboard] Skipping Bidding/Pre-Construction project: ' + (detail.name || project.name));
+    return;
+  }
+
   var pm = this.findPM(detail);
   if (!pm) return;
   var pmId = pm.id;
@@ -258,9 +273,6 @@ PMDashboard.prototype.processProject = async function(project, companyId) {
     await this.loadPMDetails(companyId, pmId);
   }
   var sched = await this.getProjectProgress(companyId, project.id, detail);
-  var stageName = 'Not Set';
-  if (detail.project_stage && detail.project_stage.name) stageName = detail.project_stage.name;
-  else if (detail.stage && typeof detail.stage === 'string') stageName = detail.stage;
   var status = this.getStatus(detail, stageName);
   this.pmData[pmId].projects.push({
     id: project.id, name: detail.name || project.name || 'Unnamed', number: detail.project_number || project.project_number || '',
@@ -363,6 +375,22 @@ PMDashboard.prototype.togglePMCard = function(pmId) {
   }else{l.style.display='none';ic.classList.remove('fa-chevron-up');ic.classList.add('fa-chevron-down');if(c)c.classList.remove('pm-card-expanded');}
 };
 
+// ========== HELPER: Get grouped subprojects ==========
+PMDashboard.prototype.getSubprojectGroups = function() {
+  var subsByPm = {};
+  var subsByProject = {};
+  for (var si = 0; si < this.subprojects.length; si++) {
+    var sp = this.subprojects[si];
+    var spPmId = String(sp.pmId);
+    if (!subsByPm[spPmId]) subsByPm[spPmId] = [];
+    subsByPm[spPmId].push(sp);
+    var spParent = String(sp.parentProjectId);
+    if (!subsByProject[spParent]) subsByProject[spParent] = [];
+    subsByProject[spParent].push(sp);
+  }
+  return { byPm: subsByPm, byProject: subsByProject };
+};
+
 // ========== RENDER ==========
 
 PMDashboard.prototype.renderDashboard = function(container) {
@@ -378,17 +406,9 @@ PMDashboard.prototype.renderDashboard = function(container) {
     return;
   }
 
-  var subsByPm = {};
-  var subsByProject = {};
-  for (var si = 0; si < this.subprojects.length; si++) {
-    var sp = this.subprojects[si];
-    var spPmId = String(sp.pmId);
-    if (!subsByPm[spPmId]) subsByPm[spPmId] = [];
-    subsByPm[spPmId].push(sp);
-    var spParent = String(sp.parentProjectId);
-    if (!subsByProject[spParent]) subsByProject[spParent] = [];
-    subsByProject[spParent].push(sp);
-  }
+  var groups = this.getSubprojectGroups();
+  var subsByPm = groups.byPm;
+  var subsByProject = groups.byProject;
 
   var totalProjects=0, activeProjects=0, totalProgress=0, totalItems=0;
   for (var i=0;i<pmList.length;i++){
@@ -523,7 +543,7 @@ PMDashboard.prototype.renderDashboard = function(container) {
           h += '<div class="subproject-item">';
           h += '<div class="project-header-row"><div class="project-name-group">';
           if(spd.number) h+='<span class="project-number">#'+spd.number+'</span>';
-          h += '<span class="project-name">'+spd.name+'<span class="subproject-badge">Subproject</span></span></div>';
+          h += '<span class="project-name">'+spd.name+'<span class="subproject-badge">Sub</span></span></div>';
           h += '<span class="project-status-badge" style="background:'+spSColor+'15;color:'+spSColor+';border:1px solid '+spSColor+'30;">'+spStatus+'</span></div>';
 
           h += '<div class="project-meta"><span class="project-stage"><i class="fas '+spSIcon+'"></i> '+spd.stage+'</span>';
@@ -551,8 +571,12 @@ PMDashboard.prototype.renderDashboard = function(container) {
   h += '</div>';
   container.innerHTML = h;
 
-  // Event delegation
-  container.addEventListener('click', function(e) {
+  // FIX: Remove old listener, attach new one
+  var newContainer = container.cloneNode(false);
+  newContainer.innerHTML = container.innerHTML;
+  container.parentNode.replaceChild(newContainer, container);
+
+  newContainer.addEventListener('click', function(e) {
     var addBtn = e.target.closest('.btn-add-subproject');
     if (addBtn) { e.stopPropagation(); var key = addBtn.getAttribute('data-modal-key'); if (key) self.openAddSubprojectModal(key); return; }
 
@@ -566,10 +590,92 @@ PMDashboard.prototype.renderDashboard = function(container) {
     if (toggleRow) { e.stopPropagation(); var projId = toggleRow.getAttribute('data-toggle-proj'); if (projId) self.toggleSubprojects(projId); return; }
   });
 
-  setTimeout(function(){ var b=document.querySelectorAll('.progress-fill'); for(var i=0;i<b.length;i++) b[i].style.transition='width 1s ease'; }, 100);
+  setTimeout(function(){ var b=newContainer.querySelectorAll('.progress-fill'); for(var i=0;i<b.length;i++) b[i].style.transition='width 1s ease'; }, 100);
+};
+
+// ========== PDF EXPORT ==========
+
+PMDashboard.prototype.generatePDFData = function() {
+  var pmList = [];
+  var keys = Object.keys(this.pmData);
+  for (var k=0;k<keys.length;k++) pmList.push(this.pmData[keys[k]]);
+  pmList.sort(function(a,b){return a.name.localeCompare(b.name);});
+
+  var groups = this.getSubprojectGroups();
+  var subsByPm = groups.byPm;
+  var subsByProject = groups.byProject;
+
+  var pdfData = [];
+  for (var i=0;i<pmList.length;i++){
+    var pm = pmList[i];
+    var pmSubs = subsByPm[String(pm.id)] || [];
+    var pmTotalItems = pm.projects.length + pmSubs.length;
+    var pmActive = 0;
+    var pmProg = 0;
+    var pmTotalTasks = pm.totalTasks;
+    var pmCompTasks = pm.completedTasks;
+
+    for (var q=0;q<pm.projects.length;q++){
+      if(pm.projects[q].status==='Active') pmActive++;
+      pmProg += pm.projects[q].progressPercent;
+    }
+    for (var sq=0;sq<pmSubs.length;sq++){
+      if(this.getStatus({active:true}, pmSubs[sq].stage)==='Active') pmActive++;
+      pmProg += pmSubs[sq].totalTasks>0 ? Math.round((pmSubs[sq].completedTasks/pmSubs[sq].totalTasks)*100) : 0;
+      pmTotalTasks += pmSubs[sq].totalTasks;
+      pmCompTasks += pmSubs[sq].completedTasks;
+    }
+
+    var pmAvg = pmTotalItems>0 ? Math.round(pmProg/pmTotalItems) : 0;
+
+    // Build project rows including subprojects
+    var allRows = [];
+    for (var r=0;r<pm.projects.length;r++){
+      var proj = pm.projects[r];
+      allRows.push({
+        type: 'project',
+        number: proj.number,
+        name: proj.name,
+        stage: proj.stage,
+        status: proj.status,
+        tasks: proj.completedTasks + '/' + proj.totalTasks,
+        progress: proj.progressPercent
+      });
+
+      // Add subprojects under this project
+      var projSubs = subsByProject[String(proj.id)] || [];
+      for (var s=0;s<projSubs.length;s++){
+        var spd = projSubs[s];
+        var spProg = spd.totalTasks>0 ? Math.round((spd.completedTasks/spd.totalTasks)*100) : 0;
+        var spStatus = this.getStatus({active:true}, spd.stage);
+        allRows.push({
+          type: 'subproject',
+          number: spd.number,
+          name: spd.name,
+          stage: spd.stage,
+          status: spStatus,
+          tasks: spd.completedTasks + '/' + spd.totalTasks,
+          progress: spProg
+        });
+      }
+    }
+
+    pdfData.push({
+      name: pm.name,
+      email: pm.email,
+      initials: pm.initials,
+      avatar: pm.avatar,
+      totalProjects: pmTotalItems,
+      activeProjects: pmActive,
+      avgProgress: pmAvg,
+      totalTasks: pmCompTasks + '/' + pmTotalTasks,
+      rows: allRows
+    });
+  }
+  return pdfData;
 };
 
 dashboard = new PMDashboard();
-console.log('[Dashboard] Module loaded with Supabase + subprojects v3.');
+console.log('[Dashboard] Module loaded with Supabase + subprojects v4.');
 
-})(); 
+})();
