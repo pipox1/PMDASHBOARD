@@ -1,12 +1,12 @@
 {
   "name": "pm-dashboard-procore",
   "version": "1.0.0",
-  "description": "Procore PM Dashboard - Side Panel App",
+  "description": "Procore PM Dashboard",
   "scripts": {
-    "dev": "netlify dev",
-    "build": "echo 'No build step required'"
+    "build": "echo No build step"
   },
   "dependencies": {
-    "node-fetch": "2.7.0"
+    "node-fetch": "2.7.0",
+    "@netlify/blobs": "^7.0.0"
   }
 }
