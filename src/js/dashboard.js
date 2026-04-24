@@ -3,7 +3,7 @@ var dashboard = null;
 (function() {
 
 var _modalPendingData = {};
-var _containerListenerAttached = false;
+var _clickHandler = null;
 
 function PMDashboard() {
   this.companyId = null;
@@ -252,16 +252,17 @@ PMDashboard.prototype.processProject = async function(project, companyId) {
   var detail;
   try { detail = await procoreAPI.getProjectDetail(companyId, project.id); } catch (e) { return; }
 
-  // FILTER: Skip Bidding and Pre-Construction projects
+  // Get stage name
   var stageName = 'Not Set';
   if (detail.project_stage && detail.project_stage.name) stageName = detail.project_stage.name;
   else if (detail.stage && typeof detail.stage === 'string') stageName = detail.stage;
 
+  // FILTER: Skip Bidding and Pre-Construction
   var stageLower = stageName.toLowerCase();
   if (stageLower.indexOf('bid') > -1 || stageLower.indexOf('cotiza') > -1 ||
       stageLower.indexOf('pre') > -1 || stageLower.indexOf('dise') > -1 ||
       stageLower.indexOf('plann') > -1) {
-    console.log('[Dashboard] Skipping Bidding/Pre-Construction project: ' + (detail.name || project.name));
+    console.log('[Dashboard] Skipping Bidding/Pre-Construction: ' + (detail.name || project.name));
     return;
   }
 
@@ -313,7 +314,6 @@ PMDashboard.prototype.getStatus = function(project, stageName) {
   var s = (stageName || '').toLowerCase();
   if (s.indexOf('ejecuc')>-1||s.indexOf('construc')>-1||s.indexOf('course')>-1||s.indexOf('en proceso')>-1) return 'Active';
   if (s.indexOf('terminad')>-1||s.indexOf('garant')>-1||s.indexOf('warranty')>-1||s.indexOf('post')>-1||s.indexOf('cierre')>-1||s.indexOf('complet')>-1) return 'Completed';
-  if (s.indexOf('pre')>-1||s.indexOf('dise')>-1||s.indexOf('cotiza')>-1||s.indexOf('bid')>-1||s.indexOf('plann')>-1) return 'Pre-Construction';
   return 'Active';
 };
 
@@ -375,7 +375,6 @@ PMDashboard.prototype.togglePMCard = function(pmId) {
   }else{l.style.display='none';ic.classList.remove('fa-chevron-up');ic.classList.add('fa-chevron-down');if(c)c.classList.remove('pm-card-expanded');}
 };
 
-// ========== HELPER: Get grouped subprojects ==========
 PMDashboard.prototype.getSubprojectGroups = function() {
   var subsByPm = {};
   var subsByProject = {};
@@ -396,6 +395,11 @@ PMDashboard.prototype.getSubprojectGroups = function() {
 PMDashboard.prototype.renderDashboard = function(container) {
   var self = this;
   _modalPendingData = {};
+
+  // Remove old click handler to prevent duplicates
+  if (_clickHandler && container) {
+    container.removeEventListener('click', _clickHandler);
+  }
 
   var pmList = [];
   var keys = Object.keys(this.pmData);
@@ -569,14 +573,12 @@ PMDashboard.prototype.renderDashboard = function(container) {
     h += '</div></div>';
   }
   h += '</div>';
+
   container.innerHTML = h;
+  console.log('[Dashboard] Render complete. HTML length: ' + h.length);
 
-  // FIX: Remove old listener, attach new one
-  var newContainer = container.cloneNode(false);
-  newContainer.innerHTML = container.innerHTML;
-  container.parentNode.replaceChild(newContainer, container);
-
-  newContainer.addEventListener('click', function(e) {
+  // Create new click handler
+  _clickHandler = function(e) {
     var addBtn = e.target.closest('.btn-add-subproject');
     if (addBtn) { e.stopPropagation(); var key = addBtn.getAttribute('data-modal-key'); if (key) self.openAddSubprojectModal(key); return; }
 
@@ -588,94 +590,14 @@ PMDashboard.prototype.renderDashboard = function(container) {
 
     var toggleRow = e.target.closest('.subprojects-toggle-row');
     if (toggleRow) { e.stopPropagation(); var projId = toggleRow.getAttribute('data-toggle-proj'); if (projId) self.toggleSubprojects(projId); return; }
-  });
+  };
 
-  setTimeout(function(){ var b=newContainer.querySelectorAll('.progress-fill'); for(var i=0;i<b.length;i++) b[i].style.transition='width 1s ease'; }, 100);
-};
+  container.addEventListener('click', _clickHandler);
 
-// ========== PDF EXPORT ==========
-
-PMDashboard.prototype.generatePDFData = function() {
-  var pmList = [];
-  var keys = Object.keys(this.pmData);
-  for (var k=0;k<keys.length;k++) pmList.push(this.pmData[keys[k]]);
-  pmList.sort(function(a,b){return a.name.localeCompare(b.name);});
-
-  var groups = this.getSubprojectGroups();
-  var subsByPm = groups.byPm;
-  var subsByProject = groups.byProject;
-
-  var pdfData = [];
-  for (var i=0;i<pmList.length;i++){
-    var pm = pmList[i];
-    var pmSubs = subsByPm[String(pm.id)] || [];
-    var pmTotalItems = pm.projects.length + pmSubs.length;
-    var pmActive = 0;
-    var pmProg = 0;
-    var pmTotalTasks = pm.totalTasks;
-    var pmCompTasks = pm.completedTasks;
-
-    for (var q=0;q<pm.projects.length;q++){
-      if(pm.projects[q].status==='Active') pmActive++;
-      pmProg += pm.projects[q].progressPercent;
-    }
-    for (var sq=0;sq<pmSubs.length;sq++){
-      if(this.getStatus({active:true}, pmSubs[sq].stage)==='Active') pmActive++;
-      pmProg += pmSubs[sq].totalTasks>0 ? Math.round((pmSubs[sq].completedTasks/pmSubs[sq].totalTasks)*100) : 0;
-      pmTotalTasks += pmSubs[sq].totalTasks;
-      pmCompTasks += pmSubs[sq].completedTasks;
-    }
-
-    var pmAvg = pmTotalItems>0 ? Math.round(pmProg/pmTotalItems) : 0;
-
-    // Build project rows including subprojects
-    var allRows = [];
-    for (var r=0;r<pm.projects.length;r++){
-      var proj = pm.projects[r];
-      allRows.push({
-        type: 'project',
-        number: proj.number,
-        name: proj.name,
-        stage: proj.stage,
-        status: proj.status,
-        tasks: proj.completedTasks + '/' + proj.totalTasks,
-        progress: proj.progressPercent
-      });
-
-      // Add subprojects under this project
-      var projSubs = subsByProject[String(proj.id)] || [];
-      for (var s=0;s<projSubs.length;s++){
-        var spd = projSubs[s];
-        var spProg = spd.totalTasks>0 ? Math.round((spd.completedTasks/spd.totalTasks)*100) : 0;
-        var spStatus = this.getStatus({active:true}, spd.stage);
-        allRows.push({
-          type: 'subproject',
-          number: spd.number,
-          name: spd.name,
-          stage: spd.stage,
-          status: spStatus,
-          tasks: spd.completedTasks + '/' + spd.totalTasks,
-          progress: spProg
-        });
-      }
-    }
-
-    pdfData.push({
-      name: pm.name,
-      email: pm.email,
-      initials: pm.initials,
-      avatar: pm.avatar,
-      totalProjects: pmTotalItems,
-      activeProjects: pmActive,
-      avgProgress: pmAvg,
-      totalTasks: pmCompTasks + '/' + pmTotalTasks,
-      rows: allRows
-    });
-  }
-  return pdfData;
+  setTimeout(function(){ var b=container.querySelectorAll('.progress-fill'); for(var i=0;i<b.length;i++) b[i].style.transition='width 1s ease'; }, 100);
 };
 
 dashboard = new PMDashboard();
-console.log('[Dashboard] Module loaded with Supabase + subprojects v4.');
+console.log('[Dashboard] Module loaded with Supabase + subprojects v5.');
 
 })();
