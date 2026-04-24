@@ -1354,3 +1354,66 @@ button:focus-visible {
 .parent-project-info strong {
   color: var(--text-primary);
 }
+
+/* =============================================
+   SUBPROJECT TOGGLE
+   ============================================= */
+.subprojects-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px 6px 28px;
+  background: #FFF8F0;
+  border-bottom: 1px solid var(--border-light);
+  cursor: pointer;
+  user-select: none;
+  transition: var(--transition);
+}
+
+.subprojects-toggle-row:hover {
+  background: #FFF0E0;
+}
+
+.subprojects-toggle-icon {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--procore-orange);
+  color: white;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: bold;
+  transition: transform 0.3s ease;
+}
+
+.subprojects-toggle-icon.expanded {
+  transform: rotate(45deg);
+}
+
+.subprojects-toggle-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--procore-orange);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.subprojects-toggle-count {
+  font-size: 10px;
+  font-weight: 700;
+  background: var(--procore-orange);
+  color: white;
+  padding: 1px 7px;
+  border-radius: 10px;
+}
+
+.subprojects-container {
+  overflow: hidden;
+  transition: max-height 0.4s ease;
+}
+
+.subprojects-container.collapsed {
+  max-height: 0 !important;
+}
