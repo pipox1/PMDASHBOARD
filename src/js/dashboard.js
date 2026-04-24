@@ -2,6 +2,8 @@ var dashboard = null;
 
 (function() {
 
+var _modalPendingData = {};
+
 function PMDashboard() {
   this.companyId = null;
   this.projects = [];
@@ -19,6 +21,9 @@ PMDashboard.prototype.loadSubprojects = async function() {
       var data = await response.json();
       this.subprojects = data.subprojects || [];
       console.log('[Subprojects] Loaded ' + this.subprojects.length + ' subprojects');
+    } else {
+      console.warn('[Subprojects] Load failed:', response.status);
+      this.subprojects = [];
     }
   } catch (e) {
     console.warn('[Subprojects] Could not load:', e.message);
@@ -36,13 +41,13 @@ PMDashboard.prototype.saveSubproject = async function(subData) {
     if (response.ok) {
       var result = await response.json();
       this.subprojects.push(result.subproject);
-      console.log('[Subprojects] Created:', result.subproject.name);
       return result.subproject;
+    } else {
+      var errText = await response.text();
+      console.error('[Subprojects] Save failed:', errText);
+      alert('Error saving: ' + errText);
     }
-  } catch (e) {
-    console.error('[Subprojects] Save error:', e.message);
-    alert('Error saving subproject: ' + e.message);
-  }
+  } catch (e) { alert('Error: ' + e.message); }
   return null;
 };
 
@@ -56,338 +61,233 @@ PMDashboard.prototype.updateSubproject = async function(subData) {
     if (response.ok) {
       var result = await response.json();
       for (var i = 0; i < this.subprojects.length; i++) {
-        if (this.subprojects[i].id === result.subproject.id) {
-          this.subprojects[i] = result.subproject;
-          break;
-        }
+        if (this.subprojects[i].id === result.subproject.id) { this.subprojects[i] = result.subproject; break; }
       }
-      console.log('[Subprojects] Updated:', result.subproject.name);
       return result.subproject;
+    } else {
+      var errText = await response.text();
+      alert('Error updating: ' + errText);
     }
-  } catch (e) {
-    console.error('[Subprojects] Update error:', e.message);
-    alert('Error updating subproject: ' + e.message);
-  }
+  } catch (e) { alert('Error: ' + e.message); }
   return null;
 };
 
 PMDashboard.prototype.deleteSubproject = async function(subId) {
   try {
-    var response = await fetch('/.netlify/functions/subprojects?id=' + subId, {
-      method: 'DELETE'
-    });
+    var response = await fetch('/.netlify/functions/subprojects?id=' + encodeURIComponent(subId), { method: 'DELETE' });
     if (response.ok) {
       this.subprojects = this.subprojects.filter(function(sp) { return sp.id !== subId; });
-      console.log('[Subprojects] Deleted:', subId);
       return true;
     }
-  } catch (e) {
-    console.error('[Subprojects] Delete error:', e.message);
-    alert('Error deleting subproject: ' + e.message);
-  }
+  } catch (e) { alert('Error: ' + e.message); }
   return false;
 };
 
-// ========== MODAL FUNCTIONS ==========
+// ========== MODAL ==========
 
-PMDashboard.prototype.showAddSubprojectModal = function(parentProjectId, parentProjectName, pmId, pmName) {
-  this.showSubprojectModal({
-    mode: 'add',
-    parentProjectId: parentProjectId,
-    parentProjectName: parentProjectName,
-    pmId: pmId,
-    pmName: pmName
+PMDashboard.prototype.openAddSubprojectModal = function(dataKey) {
+  var info = _modalPendingData[dataKey];
+  if (!info) return;
+  this.showSubprojectModal({ mode: 'add', parentProjectId: info.parentProjectId, parentProjectName: info.parentProjectName, pmId: info.pmId, pmName: info.pmName });
+};
+
+PMDashboard.prototype.openEditSubprojectModal = function(subId) {
+  var sub = null;
+  for (var i = 0; i < this.subprojects.length; i++) {
+    if (this.subprojects[i].id === subId) { sub = this.subprojects[i]; break; }
+  }
+  if (!sub) return;
+  this.showSubprojectModal({ mode: 'edit', subproject: sub });
+};
+
+PMDashboard.prototype.openDeleteSubproject = function(subId) {
+  var sub = null;
+  for (var i = 0; i < this.subprojects.length; i++) {
+    if (this.subprojects[i].id === subId) { sub = this.subprojects[i]; break; }
+  }
+  if (!sub) return;
+  if (!confirm('Delete subproject "' + sub.name + '"?')) return;
+  var self = this;
+  this.deleteSubproject(subId).then(function(ok) {
+    if (ok) { var c = document.getElementById('dashboard-content'); if (c) self.renderDashboard(c); }
   });
 };
 
-PMDashboard.prototype.showEditSubprojectModal = function(subId) {
-  var sub = null;
-  for (var i = 0; i < this.subprojects.length; i++) {
-    if (this.subprojects[i].id === subId) {
-      sub = this.subprojects[i];
-      break;
-    }
+PMDashboard.prototype.toggleSubprojects = function(projectId) {
+  var container = document.getElementById('subs-container-' + projectId);
+  var icon = document.getElementById('subs-icon-' + projectId);
+  if (!container || !icon) return;
+  if (container.classList.contains('collapsed')) {
+    container.classList.remove('collapsed');
+    container.style.maxHeight = container.scrollHeight + 'px';
+    icon.classList.add('expanded');
+  } else {
+    container.classList.add('collapsed');
+    container.style.maxHeight = '0';
+    icon.classList.remove('expanded');
   }
-  if (!sub) return;
-
-  this.showSubprojectModal({
-    mode: 'edit',
-    subproject: sub
-  });
 };
 
 PMDashboard.prototype.showSubprojectModal = function(config) {
+  var self = this;
   var isEdit = config.mode === 'edit';
   var sub = config.subproject || {};
+  this.closeModal();
 
   var overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.id = 'subproject-modal';
 
+  var content = document.createElement('div');
+  content.className = 'modal-content';
+
+  var parentName = isEdit ? (sub.parentProjectName || 'Unknown') : (config.parentProjectName || 'Unknown');
+
   var html = '';
-  html += '<div class="modal-content">';
-
-  // Header
-  html += '<div class="modal-header">';
-  html += '<h3><i class="fas fa-' + (isEdit ? 'edit' : 'plus-circle') + '"></i> ' + (isEdit ? 'Edit' : 'Add') + ' Subproject</h3>';
-  html += '<button class="modal-close" onclick="dashboard.closeModal()"><i class="fas fa-times"></i></button>';
-  html += '</div>';
-
-  // Parent info
-  var parentName = isEdit ? sub.parentProjectName : config.parentProjectName;
-  html += '<div class="parent-project-info">';
-  html += '<i class="fas fa-sitemap"></i> Parent Project: <strong>' + (parentName || 'Unknown') + '</strong>';
-  html += '</div>';
-
-  // Form
-  html += '<form id="subproject-form" onsubmit="return false;">';
-
-  // Row: Number + Name
-  html += '<div class="form-row">';
-  html += '<div class="form-group"><label>Subproject Number</label>';
-  html += '<input type="text" id="sp-number" placeholder="e.g. 5988-E" value="' + (sub.number || '') + '"></div>';
-  html += '<div class="form-group"><label>Stage</label>';
-  html += '<select id="sp-stage">';
+  html += '<div class="modal-header"><h3><i class="fas fa-' + (isEdit ? 'edit' : 'plus-circle') + '"></i> ' + (isEdit ? 'Edit' : 'Add') + ' Subproject</h3>';
+  html += '<button class="modal-close" id="modal-close-btn"><i class="fas fa-times"></i></button></div>';
+  html += '<div class="parent-project-info"><i class="fas fa-sitemap"></i> Parent: <strong>' + parentName + '</strong></div>';
+  html += '<form id="subproject-form">';
+  html += '<div class="form-row"><div class="form-group"><label>Number</label><input type="text" id="sp-number" placeholder="e.g. 5988-E" value="' + (sub.number || '') + '"></div>';
+  html += '<div class="form-group"><label>Stage</label><select id="sp-stage">';
   var stages = ['Proyecto en Ejecucion', 'Bidding', 'Pre-Construction', 'Terminados en Periodo Garantia'];
   for (var si = 0; si < stages.length; si++) {
-    var sel = (sub.stage === stages[si]) ? ' selected' : '';
-    html += '<option value="' + stages[si] + '"' + sel + '>' + stages[si] + '</option>';
+    html += '<option value="' + stages[si] + '"' + (sub.stage === stages[si] ? ' selected' : '') + '>' + stages[si] + '</option>';
   }
-  html += '</select></div>';
-  html += '</div>';
-
-  html += '<div class="form-group"><label>Subproject Name *</label>';
-  html += '<input type="text" id="sp-name" placeholder="e.g. Wiwynn Electricidad" value="' + (sub.name || '') + '" required></div>';
-
-  // Tasks
-  html += '<div class="form-row">';
-  html += '<div class="form-group"><label>Total Tasks</label>';
-  html += '<input type="number" id="sp-total-tasks" placeholder="0" min="0" value="' + (sub.totalTasks || 0) + '"></div>';
-  html += '<div class="form-group"><label>Completed Tasks</label>';
-  html += '<input type="number" id="sp-completed-tasks" placeholder="0" min="0" value="' + (sub.completedTasks || 0) + '"></div>';
-  html += '</div>';
-
-  // Dates
-  html += '<div class="form-row">';
-  html += '<div class="form-group"><label>Start Date</label>';
-  html += '<input type="date" id="sp-start-date" value="' + (sub.startDate || '') + '"></div>';
-  html += '<div class="form-group"><label>Completion Date</label>';
-  html += '<input type="date" id="sp-completion-date" value="' + (sub.completionDate || '') + '"></div>';
-  html += '</div>';
-
+  html += '</select></div></div>';
+  html += '<div class="form-group"><label>Name *</label><input type="text" id="sp-name" placeholder="e.g. Wiwynn Electricidad" value="' + (sub.name || '') + '" required></div>';
+  html += '<div class="form-row"><div class="form-group"><label>Total Tasks</label><input type="number" id="sp-total-tasks" min="0" value="' + (sub.totalTasks || 0) + '"></div>';
+  html += '<div class="form-group"><label>Completed Tasks</label><input type="number" id="sp-completed-tasks" min="0" value="' + (sub.completedTasks || 0) + '"></div></div>';
+  html += '<div class="form-row"><div class="form-group"><label>Start Date</label><input type="date" id="sp-start-date" value="' + (sub.startDate || '') + '"></div>';
+  html += '<div class="form-group"><label>Completion Date</label><input type="date" id="sp-completion-date" value="' + (sub.completionDate || '') + '"></div></div>';
   html += '</form>';
+  html += '<div class="modal-actions"><button class="btn-modal-cancel" id="modal-cancel-btn">Cancel</button>';
+  html += '<button class="btn-modal-save" id="modal-save-btn"><i class="fas fa-' + (isEdit ? 'save' : 'plus') + '"></i> ' + (isEdit ? 'Save' : 'Add Subproject') + '</button></div>';
 
-  // Actions
-  html += '<div class="modal-actions">';
-  html += '<button class="btn-modal-cancel" onclick="dashboard.closeModal()">Cancel</button>';
-
-  if (isEdit) {
-    html += '<button class="btn-modal-save" onclick="dashboard.handleSaveSubproject(\'edit\', \'' + sub.id + '\')"><i class="fas fa-save"></i> Save Changes</button>';
-  } else {
-    html += '<button class="btn-modal-save" onclick="dashboard.handleSaveSubproject(\'add\', null, \'' + config.parentProjectId + '\', \'' + this.escapeQuotes(config.parentProjectName) + '\', \'' + config.pmId + '\', \'' + this.escapeQuotes(config.pmName) + '\')"><i class="fas fa-plus"></i> Add Subproject</button>';
-  }
-
-  html += '</div>';
-  html += '</div>';
-
-  overlay.innerHTML = html;
-
-  // Close on overlay click
-  overlay.addEventListener('click', function(e) {
-    if (e.target === overlay) dashboard.closeModal();
-  });
-
+  content.innerHTML = html;
+  overlay.appendChild(content);
+  overlay.addEventListener('click', function(e) { if (e.target === overlay) self.closeModal(); });
   document.body.appendChild(overlay);
+
+  document.getElementById('modal-close-btn').addEventListener('click', function() { self.closeModal(); });
+  document.getElementById('modal-cancel-btn').addEventListener('click', function() { self.closeModal(); });
+  document.getElementById('modal-save-btn').addEventListener('click', function() {
+    self.handleSaveFromModal(isEdit, isEdit ? sub.id : null, config);
+  });
 };
 
 PMDashboard.prototype.closeModal = function() {
-  var modal = document.getElementById('subproject-modal');
-  if (modal) modal.remove();
+  var m = document.getElementById('subproject-modal');
+  if (m) m.remove();
 };
 
-PMDashboard.prototype.escapeQuotes = function(str) {
-  if (!str) return '';
-  return str.replace(/'/g, "\\'").replace(/"/g, '\\"');
-};
+PMDashboard.prototype.handleSaveFromModal = async function(isEdit, subId, config) {
+  var name = (document.getElementById('sp-name') || {}).value || '';
+  if (!name.trim()) { alert('Name is required'); return; }
+  var totalTasks = parseInt((document.getElementById('sp-total-tasks') || {}).value) || 0;
+  var completedTasks = parseInt((document.getElementById('sp-completed-tasks') || {}).value) || 0;
+  if (completedTasks > totalTasks) { alert('Completed cannot exceed total tasks'); return; }
 
-PMDashboard.prototype.handleSaveSubproject = async function(mode, subId, parentProjectId, parentProjectName, pmId, pmName) {
-  var nameEl = document.getElementById('sp-name');
-  var numberEl = document.getElementById('sp-number');
-  var totalTasksEl = document.getElementById('sp-total-tasks');
-  var completedTasksEl = document.getElementById('sp-completed-tasks');
-  var stageEl = document.getElementById('sp-stage');
-  var startDateEl = document.getElementById('sp-start-date');
-  var completionDateEl = document.getElementById('sp-completion-date');
-
-  var name = nameEl ? nameEl.value.trim() : '';
-  if (!name) {
-    alert('Subproject name is required');
-    return;
-  }
-
-  var totalTasks = totalTasksEl ? parseInt(totalTasksEl.value) || 0 : 0;
-  var completedTasks = completedTasksEl ? parseInt(completedTasksEl.value) || 0 : 0;
-
-  if (completedTasks > totalTasks) {
-    alert('Completed tasks cannot be greater than total tasks');
-    return;
-  }
+  var btn = document.getElementById('modal-save-btn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...'; }
 
   var data = {
-    name: name,
-    number: numberEl ? numberEl.value.trim() : '',
-    totalTasks: totalTasks,
-    completedTasks: completedTasks,
-    stage: stageEl ? stageEl.value : 'Proyecto en Ejecucion',
-    startDate: startDateEl ? startDateEl.value : null,
-    completionDate: completionDateEl ? completionDateEl.value : null
+    name: name.trim(),
+    number: ((document.getElementById('sp-number') || {}).value || '').trim(),
+    totalTasks: totalTasks, completedTasks: completedTasks,
+    stage: (document.getElementById('sp-stage') || {}).value || 'Proyecto en Ejecucion',
+    startDate: (document.getElementById('sp-start-date') || {}).value || null,
+    completionDate: (document.getElementById('sp-completion-date') || {}).value || null
   };
 
-  var result = null;
-
-  if (mode === 'edit') {
+  var result;
+  if (isEdit) {
     data.id = subId;
     result = await this.updateSubproject(data);
   } else {
-    data.parentProjectId = parentProjectId;
-    data.parentProjectName = parentProjectName || '';
-    data.pmId = pmId;
-    data.pmName = pmName || '';
+    data.parentProjectId = config.parentProjectId;
+    data.parentProjectName = config.parentProjectName || '';
+    data.pmId = config.pmId;
+    data.pmName = config.pmName || '';
     result = await this.saveSubproject(data);
   }
 
   if (result) {
     this.closeModal();
-    // Re-render dashboard
-    var container = document.getElementById('dashboard-content');
-    if (container) this.renderDashboard(container);
+    var c = document.getElementById('dashboard-content');
+    if (c) this.renderDashboard(c);
+  } else if (btn) {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-' + (isEdit ? 'save' : 'plus') + '"></i> ' + (isEdit ? 'Save' : 'Add Subproject');
   }
 };
 
-PMDashboard.prototype.handleDeleteSubproject = async function(subId, subName) {
-  if (!confirm('Are you sure you want to delete subproject "' + subName + '"?')) return;
-
-  var ok = await this.deleteSubproject(subId);
-  if (ok) {
-    var container = document.getElementById('dashboard-content');
-    if (container) this.renderDashboard(container);
-  }
-};
-
-// ========== MAIN LOAD ==========
+// ========== LOAD ==========
 
 PMDashboard.prototype.loadDashboard = async function(companyId) {
   this.companyId = companyId;
   this.pmData = {};
   this.isLoading = true;
-
   try {
-    // Load subprojects first
     this.updateLoadingMessage('Loading saved subprojects...');
     await this.loadSubprojects();
-
     this.updateLoadingMessage('Loading projects...');
     var allProjects = await procoreAPI.getProjects(companyId);
     this.projects = allProjects;
     console.log('[Dashboard] Found ' + this.projects.length + ' total projects');
 
-    var processed = 0;
-    var total = this.projects.length;
-
     for (var i = 0; i < this.projects.length; i++) {
-      var project = this.projects[i];
-      processed++;
-      this.updateLoadingMessage(
-        'Analyzing project ' + processed + '/' + total + ':<br><strong>' + (project.name || 'Unknown') + '</strong>'
-      );
-
-      try {
-        await this.processProject(project, companyId);
-      } catch (err) {
-        console.warn('[Dashboard] Error processing project ' + project.id + ':', err.message);
-      }
-
-      if (processed % 2 === 0) {
-        await this.sleep(500);
-      }
+      this.updateLoadingMessage('Analyzing project ' + (i+1) + '/' + this.projects.length + ':<br><strong>' + (this.projects[i].name || 'Unknown') + '</strong>');
+      try { await this.processProject(this.projects[i], companyId); } catch (err) { console.warn('[Dashboard] Error:', err.message); }
+      if ((i+1) % 2 === 0) await this.sleep(500);
     }
-
     this.isLoading = false;
     console.log('[Dashboard] Done. PMs: ' + Object.keys(this.pmData).length);
     return this.pmData;
-
-  } catch (error) {
-    this.isLoading = false;
-    throw error;
-  }
+  } catch (error) { this.isLoading = false; throw error; }
 };
 
 PMDashboard.prototype.processProject = async function(project, companyId) {
   var detail;
-  try {
-    detail = await procoreAPI.getProjectDetail(companyId, project.id);
-  } catch (e) { return; }
-
-  var pm = this.findPM(detail, project);
+  try { detail = await procoreAPI.getProjectDetail(companyId, project.id); } catch (e) { return; }
+  var pm = this.findPM(detail);
   if (!pm) return;
-
   var pmId = pm.id;
   if (!this.pmData[pmId]) {
-    this.pmData[pmId] = {
-      id: pmId, name: this.cleanName(pm.name), email: '', avatar: null,
-      initials: this.getInitials(pm.name), projects: [], totalTasks: 0, completedTasks: 0
-    };
+    this.pmData[pmId] = { id: pmId, name: this.cleanName(pm.name), email: '', avatar: null, initials: this.getInitials(pm.name), projects: [], totalTasks: 0, completedTasks: 0 };
     await this.loadPMDetails(companyId, pmId);
   }
-
-  var scheduleResult = await this.getProjectProgress(companyId, project.id, detail);
-
+  var sched = await this.getProjectProgress(companyId, project.id, detail);
   var stageName = 'Not Set';
   if (detail.project_stage && detail.project_stage.name) stageName = detail.project_stage.name;
   else if (detail.stage && typeof detail.stage === 'string') stageName = detail.stage;
-
   var status = this.getStatus(detail, stageName);
-
   this.pmData[pmId].projects.push({
-    id: project.id,
-    name: detail.name || project.name || 'Unnamed',
-    number: detail.project_number || project.project_number || '',
-    stage: stageName, status: status,
-    startDate: detail.start_date || null,
-    completionDate: detail.completion_date || null,
-    totalTasks: scheduleResult.totalTasks,
-    completedTasks: scheduleResult.completedTasks,
-    progressPercent: scheduleResult.progressPercent,
-    progressSource: scheduleResult.source,
+    id: project.id, name: detail.name || project.name || 'Unnamed', number: detail.project_number || project.project_number || '',
+    stage: stageName, status: status, startDate: detail.start_date || null, completionDate: detail.completion_date || null,
+    totalTasks: sched.totalTasks, completedTasks: sched.completedTasks, progressPercent: sched.progressPercent, progressSource: sched.source,
     pmId: pmId, pmName: this.pmData[pmId].name
   });
-
-  this.pmData[pmId].totalTasks += scheduleResult.totalTasks;
-  this.pmData[pmId].completedTasks += scheduleResult.completedTasks;
+  this.pmData[pmId].totalTasks += sched.totalTasks;
+  this.pmData[pmId].completedTasks += sched.completedTasks;
 };
 
 PMDashboard.prototype.findPM = function(detail) {
-  if (detail.project_manager && detail.project_manager.id)
-    return { id: detail.project_manager.id, name: detail.project_manager.name || 'Unknown' };
-  if (detail.project_manager && typeof detail.project_manager === 'number')
-    return { id: detail.project_manager, name: 'PM #' + detail.project_manager };
-  if (detail.project_manager_id)
-    return { id: detail.project_manager_id, name: 'PM #' + detail.project_manager_id };
+  if (detail.project_manager && detail.project_manager.id) return { id: detail.project_manager.id, name: detail.project_manager.name || 'Unknown' };
+  if (detail.project_manager && typeof detail.project_manager === 'number') return { id: detail.project_manager, name: 'PM #' + detail.project_manager };
+  if (detail.project_manager_id) return { id: detail.project_manager_id, name: 'PM #' + detail.project_manager_id };
   if (detail.custom_fields) {
     var cfKeys = Object.keys(detail.custom_fields);
     for (var ci = 0; ci < cfKeys.length; ci++) {
       var cf = detail.custom_fields[cfKeys[ci]];
       if (cf && cf.data_type === 'login_informations' && cf.value) {
         var vals = cf.value;
-        if (Array.isArray(vals) && vals.length > 0 && vals[0].id)
-          return { id: vals[0].id, name: vals[0].label || 'Unknown' };
-        if (!Array.isArray(vals) && vals.id)
-          return { id: vals.id, name: vals.label || 'Unknown' };
+        if (Array.isArray(vals) && vals.length > 0 && vals[0].id) return { id: vals[0].id, name: vals[0].label || 'Unknown' };
+        if (!Array.isArray(vals) && vals.id) return { id: vals.id, name: vals.label || 'Unknown' };
       }
     }
   }
-  if (detail.superintendent && detail.superintendent.id)
-    return { id: detail.superintendent.id, name: detail.superintendent.name || 'Unknown' };
+  if (detail.superintendent && detail.superintendent.id) return { id: detail.superintendent.id, name: detail.superintendent.name || 'Unknown' };
   if (detail.created_by && detail.created_by.name) {
     var cn = detail.created_by.name.toLowerCase();
     if (cn.indexOf('barajas')>-1||cn.indexOf('mora')>-1||cn.indexOf('munoz')>-1||cn.indexOf('muñoz')>-1||cn.indexOf('gallegos')>-1)
@@ -415,21 +315,14 @@ PMDashboard.prototype.getProjectProgress = async function(companyId, projectId, 
       if (wt.length===0) wt=tasks;
       result.totalTasks = wt.length;
       for (var j=0;j<wt.length;j++) {
-        var pct=wt[j].percentage||wt[j].percent_complete||0;
-        if(typeof pct==='string')pct=parseFloat(pct);
+        var pct=wt[j].percentage||wt[j].percent_complete||0; if(typeof pct==='string')pct=parseFloat(pct);
         var st=(wt[j].status||'').toLowerCase();
         if(pct>=100||st==='completed'||st==='complete'||wt[j].actual_finish) result.completedTasks++;
       }
       result.progressPercent = result.totalTasks>0?Math.round((result.completedTasks/result.totalTasks)*100):0;
       result.source = 'schedule';
-    } else {
-      result.progressPercent = this.estimateProgress(detail);
-      result.source = 'dates';
-    }
-  } catch(e) {
-    result.progressPercent = this.estimateProgress(detail);
-    result.source = 'dates';
-  }
+    } else { result.progressPercent = this.estimateProgress(detail); result.source = 'dates'; }
+  } catch(e) { result.progressPercent = this.estimateProgress(detail); result.source = 'dates'; }
   return result;
 };
 
@@ -440,13 +333,9 @@ PMDashboard.prototype.loadPMDetails = async function(companyId, pmId) {
     this.pmData[pmId].email = user.email_address || user.email || '';
     var av = null;
     if (user.avatar && typeof user.avatar==='string' && user.avatar.indexOf('http')===0) av=user.avatar;
-    else if (user.avatar && typeof user.avatar==='object') {
-      av = user.avatar.url||user.avatar.compact||user.avatar.medium||user.avatar.large||null;
-      if (!av && user.avatar.versions) av=user.avatar.versions.medium||user.avatar.versions.compact||null;
-    }
+    else if (user.avatar && typeof user.avatar==='object') { av = user.avatar.url||user.avatar.compact||user.avatar.medium||user.avatar.large||null; if (!av && user.avatar.versions) av=user.avatar.versions.medium||user.avatar.versions.compact||null; }
     if (!av && user.avatar_url) av=user.avatar_url;
-    if (av && av.indexOf('http')===0 && av.indexOf('/default')===-1 && av.indexOf('missing')===-1)
-      this.pmData[pmId].avatar = procoreAPI.getProxiedImageUrl(av);
+    if (av && av.indexOf('http')===0 && av.indexOf('/default')===-1 && av.indexOf('missing')===-1) this.pmData[pmId].avatar = procoreAPI.getProxiedImageUrl(av);
     if (user.name) { this.pmData[pmId].name=this.cleanName(user.name); this.pmData[pmId].initials=this.getInitials(user.name); }
   } catch(e) {}
 };
@@ -478,6 +367,8 @@ PMDashboard.prototype.togglePMCard = function(pmId) {
 
 PMDashboard.prototype.renderDashboard = function(container) {
   var self = this;
+  _modalPendingData = {};
+
   var pmList = [];
   var keys = Object.keys(this.pmData);
   for (var k=0;k<keys.length;k++) pmList.push(this.pmData[keys[k]]);
@@ -487,7 +378,6 @@ PMDashboard.prototype.renderDashboard = function(container) {
     return;
   }
 
-  // Get subprojects grouped by PM
   var subsByPm = {};
   var subsByProject = {};
   for (var si = 0; si < this.subprojects.length; si++) {
@@ -500,7 +390,6 @@ PMDashboard.prototype.renderDashboard = function(container) {
     subsByProject[spParent].push(sp);
   }
 
-  // Calculate totals including subprojects
   var totalProjects=0, activeProjects=0, totalProgress=0, totalItems=0;
   for (var i=0;i<pmList.length;i++){
     var pmSubs = subsByPm[String(pmList[i].id)] || [];
@@ -511,27 +400,20 @@ PMDashboard.prototype.renderDashboard = function(container) {
       totalProgress += pmList[i].projects[j].progressPercent;
     }
     for (var sj=0;sj<pmSubs.length;sj++){
-      var spStatus = this.getStatus({active:true}, pmSubs[sj].stage);
-      if(spStatus==='Active') activeProjects++;
-      var spProg = pmSubs[sj].totalTasks>0 ? Math.round((pmSubs[sj].completedTasks/pmSubs[sj].totalTasks)*100) : 0;
-      totalProgress += spProg;
+      if(this.getStatus({active:true}, pmSubs[sj].stage)==='Active') activeProjects++;
+      totalProgress += pmSubs[sj].totalTasks>0 ? Math.round((pmSubs[sj].completedTasks/pmSubs[sj].totalTasks)*100) : 0;
     }
   }
   var avgProgress = totalItems>0 ? Math.round(totalProgress/totalItems) : 0;
 
   var h = '';
-
-  // Summary
   h += '<div class="dashboard-summary">';
   h += '<div class="summary-card summary-total"><i class="fas fa-project-diagram"></i><div class="summary-info"><span class="summary-value">'+totalProjects+'</span><span class="summary-label">Total Projects</span></div></div>';
   h += '<div class="summary-card summary-active"><i class="fas fa-play-circle"></i><div class="summary-info"><span class="summary-value">'+activeProjects+'</span><span class="summary-label">Active</span></div></div>';
   h += '<div class="summary-card summary-pms"><i class="fas fa-users"></i><div class="summary-info"><span class="summary-value">'+pmList.length+'</span><span class="summary-label">Project Managers</span></div></div>';
-  h += '<div class="summary-card summary-avg"><i class="fas fa-chart-line"></i><div class="summary-info"><span class="summary-value">'+avgProgress+'%</span>';
-  h += '<span class="summary-label">Avg. Progress <span class="info-tooltip-wrapper"><span class="info-icon"><i class="fas fa-question"></i></span>';
-  h += '<span class="info-tooltip">Average progress across all projects and subprojects. Based on schedule tasks where available, or estimated from dates.</span></span></span></div></div>';
+  h += '<div class="summary-card summary-avg"><i class="fas fa-chart-line"></i><div class="summary-info"><span class="summary-value">'+avgProgress+'%</span><span class="summary-label">Avg. Progress</span></div></div>';
   h += '</div>';
 
-  // PM Cards
   h += '<div class="pm-cards-container">';
   pmList.sort(function(a,b){return a.name.localeCompare(b.name);});
 
@@ -545,8 +427,7 @@ PMDashboard.prototype.renderDashboard = function(container) {
       pmProg += pm.projects[q].progressPercent;
     }
     for (var sq=0;sq<pmSubs.length;sq++){
-      var sqStatus = this.getStatus({active:true}, pmSubs[sq].stage);
-      if(sqStatus==='Active') pmActive++;
+      if(this.getStatus({active:true}, pmSubs[sq].stage)==='Active') pmActive++;
       pmProg += pmSubs[sq].totalTasks>0 ? Math.round((pmSubs[sq].completedTasks/pmSubs[sq].totalTasks)*100) : 0;
     }
 
@@ -556,12 +437,11 @@ PMDashboard.prototype.renderDashboard = function(container) {
     var pmCompTasks = pm.completedTasks;
     for (var st=0;st<pmSubs.length;st++){ pmTotalTasks+=pmSubs[st].totalTasks; pmCompTasks+=pmSubs[st].completedTasks; }
 
-    // PM Card
     h += '<div class="pm-card" id="pm-card-'+pm.id+'">';
     h += '<div class="pm-header" onclick="dashboard.togglePMCard(\''+pm.id+'\')">';
     h += '<div class="pm-profile"><div class="pm-avatar-wrapper">';
     if(pm.avatar){
-      h+='<img src="'+pm.avatar+'" alt="'+pm.name+'" class="pm-avatar" crossorigin="anonymous" referrerpolicy="no-referrer" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\';">';
+      h+='<img src="'+pm.avatar+'" alt="" class="pm-avatar" crossorigin="anonymous" referrerpolicy="no-referrer" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\';">';
       h+='<div class="pm-avatar-initials" style="display:none;">'+pm.initials+'</div>';
     } else { h+='<div class="pm-avatar-initials">'+pm.initials+'</div>'; }
     h += '</div><div class="pm-info"><h3 class="pm-name">'+pm.name+'</h3>';
@@ -577,7 +457,6 @@ PMDashboard.prototype.renderDashboard = function(container) {
     h += '<text x="18" y="20.35" class="progress-text">'+pmAvg+'%</text></svg></div>';
     h += '<i class="fas fa-chevron-down pm-toggle-icon" id="toggle-icon-'+pm.id+'"></i></div></div>';
 
-    // Projects List
     h += '<div class="pm-projects-list" id="pm-projects-'+pm.id+'" style="display:none;">';
     h += '<div class="pm-projects-header"><span><i class="fas fa-list"></i> Assigned Projects</span>';
     h += '<span class="pm-tasks-total"><i class="fas fa-tasks"></i> '+pmCompTasks+'/'+pmTotalTasks+' total tasks</span></div>';
@@ -595,6 +474,9 @@ PMDashboard.prototype.renderDashboard = function(container) {
       var sIcon = this.getStageIcon(proj.stage);
       var srcLabel = proj.progressSource==='schedule'?'':' (est.)';
       var projSubs = subsByProject[String(proj.id)] || [];
+
+      var modalKey = 'mk_' + proj.id;
+      _modalPendingData[modalKey] = { parentProjectId: String(proj.id), parentProjectName: proj.name, pmId: String(pm.id), pmName: pm.name };
 
       h += '<div class="project-item">';
       h += '<div class="project-header-row"><div class="project-name-group">';
@@ -615,57 +497,79 @@ PMDashboard.prototype.renderDashboard = function(container) {
       h += '<div class="project-progress-bar"><div class="progress-track"><div class="progress-fill" style="width:'+proj.progressPercent+'%;background:'+pColor+';"></div></div>';
       h += '<span class="progress-percent" style="color:'+pColor+';">'+proj.progressPercent+'%'+srcLabel+'</span></div>';
 
-      // Add Subproject button
-      h += '<button class="btn-add-subproject" onclick="event.stopPropagation(); dashboard.showAddSubprojectModal(\''+proj.id+'\', \''+this.escapeQuotes(proj.name)+'\', \''+pm.id+'\', \''+this.escapeQuotes(pm.name)+'\')">';
+      h += '<button class="btn-add-subproject" data-modal-key="'+modalKey+'">';
       h += '<i class="fas fa-plus"></i> Add Subproject</button>';
 
-      h += '</div>'; // end project-item
+      h += '</div>';
 
-      // Render subprojects for this project
-      for (var sub=0;sub<projSubs.length;sub++){
-        var sp = projSubs[sub];
-        var spProg = sp.totalTasks>0 ? Math.round((sp.completedTasks/sp.totalTasks)*100) : 0;
-        var spColor = this.getProgressColor(spProg);
-        var spStatus = this.getStatus({active:true}, sp.stage);
-        var spSColor = this.getStatusColor(spStatus);
-        var spSIcon = this.getStageIcon(sp.stage);
-
-        h += '<div class="subproject-item">';
-        h += '<div class="project-header-row"><div class="project-name-group">';
-        if(sp.number) h+='<span class="project-number">#'+sp.number+'</span>';
-        h += '<span class="project-name">'+sp.name+'<span class="subproject-badge">Subproject</span></span></div>';
-        h += '<span class="project-status-badge" style="background:'+spSColor+'15;color:'+spSColor+';border:1px solid '+spSColor+'30;">'+spStatus+'</span></div>';
-
-        h += '<div class="project-meta"><span class="project-stage"><i class="fas '+spSIcon+'"></i> '+sp.stage+'</span>';
-        h += '<span class="project-tasks-count"><i class="fas fa-check-circle"></i> '+sp.completedTasks+'/'+sp.totalTasks+' tasks</span></div>';
-
-        h += '<div class="project-dates">';
-        if(sp.startDate) h+='<span class="date-tag"><i class="fas fa-play"></i> '+this.formatDate(sp.startDate)+'</span>';
-        if(sp.completionDate) h+='<span class="date-tag"><i class="fas fa-flag-checkered"></i> '+this.formatDate(sp.completionDate)+'</span>';
+      // Subprojects toggle + container
+      if (projSubs.length > 0) {
+        h += '<div class="subprojects-toggle-row" data-toggle-proj="'+proj.id+'">';
+        h += '<div class="subprojects-toggle-icon" id="subs-icon-'+proj.id+'"><i class="fas fa-plus"></i></div>';
+        h += '<span class="subprojects-toggle-label">Subprojects</span>';
+        h += '<span class="subprojects-toggle-count">'+projSubs.length+'</span>';
         h += '</div>';
 
-        h += '<div class="project-progress-bar"><div class="progress-track"><div class="progress-fill" style="width:'+spProg+'%;background:'+spColor+';"></div></div>';
-        h += '<span class="progress-percent" style="color:'+spColor+';">'+spProg+'%</span></div>';
+        h += '<div class="subprojects-container collapsed" id="subs-container-'+proj.id+'" style="max-height:0;">';
 
-        h += '<div class="subproject-actions">';
-        h += '<button class="btn-sub-action btn-sub-edit" onclick="event.stopPropagation(); dashboard.showEditSubprojectModal(\''+sp.id+'\')"><i class="fas fa-edit"></i> Edit</button>';
-        h += '<button class="btn-sub-action btn-sub-delete" onclick="event.stopPropagation(); dashboard.handleDeleteSubproject(\''+sp.id+'\', \''+this.escapeQuotes(sp.name)+'\')"><i class="fas fa-trash"></i> Delete</button>';
+        for (var sub=0;sub<projSubs.length;sub++){
+          var spd = projSubs[sub];
+          var spProg = spd.totalTasks>0 ? Math.round((spd.completedTasks/spd.totalTasks)*100) : 0;
+          var spColor = this.getProgressColor(spProg);
+          var spStatus = this.getStatus({active:true}, spd.stage);
+          var spSColor = this.getStatusColor(spStatus);
+          var spSIcon = this.getStageIcon(spd.stage);
+
+          h += '<div class="subproject-item">';
+          h += '<div class="project-header-row"><div class="project-name-group">';
+          if(spd.number) h+='<span class="project-number">#'+spd.number+'</span>';
+          h += '<span class="project-name">'+spd.name+'<span class="subproject-badge">Subproject</span></span></div>';
+          h += '<span class="project-status-badge" style="background:'+spSColor+'15;color:'+spSColor+';border:1px solid '+spSColor+'30;">'+spStatus+'</span></div>';
+
+          h += '<div class="project-meta"><span class="project-stage"><i class="fas '+spSIcon+'"></i> '+spd.stage+'</span>';
+          h += '<span class="project-tasks-count"><i class="fas fa-check-circle"></i> '+spd.completedTasks+'/'+spd.totalTasks+' tasks</span></div>';
+
+          h += '<div class="project-dates">';
+          if(spd.startDate) h+='<span class="date-tag"><i class="fas fa-play"></i> '+this.formatDate(spd.startDate)+'</span>';
+          if(spd.completionDate) h+='<span class="date-tag"><i class="fas fa-flag-checkered"></i> '+this.formatDate(spd.completionDate)+'</span>';
+          h += '</div>';
+
+          h += '<div class="project-progress-bar"><div class="progress-track"><div class="progress-fill" style="width:'+spProg+'%;background:'+spColor+';"></div></div>';
+          h += '<span class="progress-percent" style="color:'+spColor+';">'+spProg+'%</span></div>';
+
+          h += '<div class="subproject-actions">';
+          h += '<button class="btn-sub-action btn-sub-edit" data-sub-edit="'+spd.id+'"><i class="fas fa-edit"></i> Edit</button>';
+          h += '<button class="btn-sub-action btn-sub-delete" data-sub-delete="'+spd.id+'"><i class="fas fa-trash"></i> Delete</button>';
+          h += '</div>';
+          h += '</div>';
+        }
         h += '</div>';
-
-        h += '</div>'; // end subproject-item
       }
     }
-
-    h += '</div></div>'; // end pm-projects-list, pm-card
+    h += '</div></div>';
   }
-
   h += '</div>';
   container.innerHTML = h;
+
+  // Event delegation
+  container.addEventListener('click', function(e) {
+    var addBtn = e.target.closest('.btn-add-subproject');
+    if (addBtn) { e.stopPropagation(); var key = addBtn.getAttribute('data-modal-key'); if (key) self.openAddSubprojectModal(key); return; }
+
+    var editBtn = e.target.closest('.btn-sub-edit');
+    if (editBtn) { e.stopPropagation(); self.openEditSubprojectModal(editBtn.getAttribute('data-sub-edit')); return; }
+
+    var delBtn = e.target.closest('.btn-sub-delete');
+    if (delBtn) { e.stopPropagation(); self.openDeleteSubproject(delBtn.getAttribute('data-sub-delete')); return; }
+
+    var toggleRow = e.target.closest('.subprojects-toggle-row');
+    if (toggleRow) { e.stopPropagation(); var projId = toggleRow.getAttribute('data-toggle-proj'); if (projId) self.toggleSubprojects(projId); return; }
+  });
 
   setTimeout(function(){ var b=document.querySelectorAll('.progress-fill'); for(var i=0;i<b.length;i++) b[i].style.transition='width 1s ease'; }, 100);
 };
 
 dashboard = new PMDashboard();
-console.log('[Dashboard] Module loaded with subprojects support.');
+console.log('[Dashboard] Module loaded with Supabase + subprojects v3.');
 
-})();
+})(); 
